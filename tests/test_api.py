@@ -3,8 +3,8 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic_ai.models.test import TestModel
 
-from knowledgehub.api import build_app
-from knowledgehub.config import Settings
+from hippo.api import build_app
+from hippo.config import Settings
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False
 

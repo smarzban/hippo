@@ -1,10 +1,10 @@
 import pytest
 
-from knowledgehub.db import connect
-from knowledgehub.embeddings import FakeEmbedder
-from knowledgehub.ingest import Ingestor, sync_folder
-from knowledgehub.parsers import parse_file
-from knowledgehub.storage import Storage
+from hippo.db import connect
+from hippo.embeddings import FakeEmbedder
+from hippo.ingest import Ingestor, sync_folder
+from hippo.parsers import parse_file
+from hippo.storage import Storage
 
 
 @pytest.fixture

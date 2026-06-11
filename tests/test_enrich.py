@@ -1,7 +1,7 @@
 import pydantic_ai.models
 from pydantic_ai.models.test import TestModel
 
-from knowledgehub.enrich import Enricher
+from hippo.enrich import Enricher
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False
 
@@ -14,10 +14,10 @@ def test_summarize_and_contextualize_use_model():
 
 
 def test_enricher_feeds_embedding_inputs(tmp_path):
-    from knowledgehub.db import connect
-    from knowledgehub.embeddings import FakeEmbedder
-    from knowledgehub.ingest import Ingestor
-    from knowledgehub.storage import Storage
+    from hippo.db import connect
+    from hippo.embeddings import FakeEmbedder
+    from hippo.ingest import Ingestor
+    from hippo.storage import Storage
 
     store = Storage(connect(tmp_path / "t.db", embedding_dim=32), FakeEmbedder(dim=32))
     e = Enricher(model=TestModel(custom_output_text="ctxline"))

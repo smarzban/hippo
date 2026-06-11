@@ -1,9 +1,9 @@
 import pytest
 
-from knowledgehub.chunking import Chunk
-from knowledgehub.db import connect
-from knowledgehub.embeddings import FakeEmbedder
-from knowledgehub.storage import Storage
+from hippo.chunking import Chunk
+from hippo.db import connect
+from hippo.embeddings import FakeEmbedder
+from hippo.storage import Storage
 
 
 @pytest.fixture

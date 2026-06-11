@@ -1,6 +1,6 @@
 import math
 
-from knowledgehub.embeddings import FakeEmbedder
+from hippo.embeddings import FakeEmbedder
 
 
 def test_fake_embedder_deterministic_unit_vectors():
