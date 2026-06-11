@@ -12,6 +12,8 @@ def test_defaults():
     assert s.enrich_enabled is True
     assert s.enrich_model == "openai:gpt-5-mini"
     assert s.chunk_max_chars == 3000
+    assert s.chunk_overlap_chars == 200
+    assert s.search_top_k == 8
     assert s.max_tool_calls == 15
 
 
