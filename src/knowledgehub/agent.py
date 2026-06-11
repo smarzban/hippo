@@ -39,7 +39,7 @@ def build_agent(model) -> Agent[HubDeps, str]:
         Returns chunks with provenance (path, title, section). Use this first for
         every question; vary the phrasing across calls if results look incomplete.
         """
-        hits = ctx.deps.store.search_hybrid(query, top_k=top_k)
+        hits = ctx.deps.store.search_hybrid(query, top_k=max(1, top_k))
         return [
             {
                 "doc_id": h.document_id,
