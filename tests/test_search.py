@@ -46,3 +46,14 @@ def test_grep(store):
     assert len(hits) == 1
     assert hits[0].path == "polly/telegram.md"
     assert store.grep(r"nonexistentzzz") == []
+
+
+def test_grep_invalid_regex_raises_value_error(store):
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="invalid regex"):
+        store.grep("[")
+
+
+def test_empty_query_returns_nothing(store):
+    assert store.search_hybrid("   ", top_k=3) == []
