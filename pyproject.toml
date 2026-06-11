@@ -1,0 +1,34 @@
+[project]
+name = "knowledgehub"
+version = "0.1.0"
+description = "Agentic knowledge hub: ingest docs, query via chat agent"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-ai",
+    "pydantic-settings",
+    "fastapi",
+    "uvicorn",
+    "sqlite-vec",
+    "typer",
+    "watchfiles",
+    "markdownify",
+    "pyyaml",
+    "python-multipart",
+]
+
+[project.scripts]
+hub = "knowledgehub.cli:app"
+
+[dependency-groups]
+dev = ["pytest", "anyio", "httpx"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/knowledgehub"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
