@@ -142,6 +142,8 @@ class Storage:
 
     def search_hybrid(self, query: str, top_k: int = 8) -> list[SearchHit]:
         """FTS5 BM25 + vector KNN, merged with Reciprocal Rank Fusion."""
+        if not query.strip():
+            return []
         fts_ranked = self._search_fts(query, limit=top_k * 3)
         vec_ranked = self._search_vec(query, limit=top_k * 3)
         scores: dict[int, float] = {}
@@ -181,8 +183,14 @@ class Storage:
 
     def grep(self, pattern: str, limit: int = 20) -> list[SearchHit]:
         """Exact/regex scan over raw chunk text. Complements the indexes for
-        identifiers and codenames. Corpus is small; a full scan is fine."""
-        rx = re.compile(pattern, re.IGNORECASE)
+        identifiers and codenames. Corpus is small; a full scan is fine.
+
+        Invalid regex (the agent may construct one) raises ValueError so the
+        caller/tool layer can surface a correctable message."""
+        try:
+            rx = re.compile(pattern, re.IGNORECASE)
+        except re.error as e:
+            raise ValueError(f"invalid regex pattern {pattern!r}: {e}") from e
         hits: list[SearchHit] = []
         rows = self.con.execute(
             """SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text
