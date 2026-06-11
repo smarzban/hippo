@@ -4,6 +4,8 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: true, // listen on all interfaces (LAN/Tailscale access)
+    allowedHosts: [".ts.net"], // MagicDNS names; backend stays localhost-only behind the proxy
     proxy: {
       "/chat": "http://127.0.0.1:8000",
       "/ingest": "http://127.0.0.1:8000",
