@@ -1,0 +1,93 @@
+from dataclasses import dataclass
+
+from pydantic_ai import Agent, RunContext
+
+from .storage import Storage
+
+SYSTEM_PROMPT = """You are the team knowledge hub. You answer questions ONLY from the indexed
+documents, found via your tools. Rules:
+
+- Always search before answering. Use multiple searches with different phrasings when the
+  first results look incomplete.
+- For "why" questions, prefer read_document on the most relevant document over answering
+  from a fragment; follow references to other documents by searching for them.
+- Use grep for exact identifiers, codenames, or acronyms that search may miss.
+- Cite every claim with its source as [path > section]. Never state facts without a citation.
+- If the knowledge base does not contain the answer, say exactly that and name what you
+  looked for. Never improvise from general knowledge.
+- Keep answers concise; quote the source where wording matters."""
+
+
+@dataclass
+class HubDeps:
+    store: Storage
+
+
+def build_agent(model) -> Agent[HubDeps, str]:
+    agent: Agent[HubDeps, str] = Agent(
+        model,
+        deps_type=HubDeps,
+        system_prompt=SYSTEM_PROMPT,
+        retries=2,
+        defer_model_check=True,
+    )
+
+    @agent.tool
+    def search(ctx: RunContext[HubDeps], query: str, top_k: int = 8) -> list[dict]:
+        """Hybrid keyword+semantic search over the knowledge base.
+
+        Returns chunks with provenance (path, title, section). Use this first for
+        every question; vary the phrasing across calls if results look incomplete.
+        """
+        hits = ctx.deps.store.search_hybrid(query, top_k=top_k)
+        return [
+            {
+                "doc_id": h.document_id,
+                "path": h.path,
+                "title": h.title,
+                "section": h.heading_path,
+                "text": h.text,
+            }
+            for h in hits
+        ]
+
+    @agent.tool
+    def read_document(ctx: RunContext[HubDeps], doc_id: int) -> dict:
+        """Read a full document by id (ids come from search/list_documents results).
+
+        Use this when a chunk looks relevant but truncated, and for 'why' questions
+        where surrounding context matters.
+        """
+        doc = ctx.deps.store.get_document(doc_id)
+        if doc is None:
+            return {"error": f"no document with id {doc_id}"}
+        return {"doc_id": doc.id, "path": doc.path, "title": doc.title, "content": doc.content}
+
+    @agent.tool
+    def list_documents(ctx: RunContext[HubDeps], query: str | None = None) -> list[dict]:
+        """Browse indexed documents (titles + summaries), optionally filtered.
+
+        Use this to discover which documents exist about a topic before deep-diving.
+        """
+        return [
+            {"doc_id": d.id, "path": d.path, "title": d.title, "summary": d.summary or ""}
+            for d in ctx.deps.store.list_documents(query=query)
+        ]
+
+    @agent.tool
+    def grep(ctx: RunContext[HubDeps], pattern: str) -> list[dict]:
+        """Exact regex scan over raw document text (case-insensitive).
+
+        Use for identifiers, codenames, acronyms, or exact strings that fuzzy
+        search might miss (e.g. 'POLLY_WEBHOOK_URL').
+        """
+        try:
+            hits = ctx.deps.store.grep(pattern)
+        except ValueError as e:
+            return [{"error": str(e)}]
+        return [
+            {"doc_id": h.document_id, "path": h.path, "section": h.heading_path, "text": h.text}
+            for h in hits
+        ]
+
+    return agent
