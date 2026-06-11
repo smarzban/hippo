@@ -8,3 +8,4 @@ ui/node_modules/
 ui/dist/
 .pytest_cache/
 .env
+ui/tsconfig.tsbuildinfo
