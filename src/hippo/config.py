@@ -6,7 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """All knobs. Override via env vars prefixed HIPPO_ (e.g. HIPPO_CHAT_MODEL)."""
 
-    model_config = SettingsConfigDict(env_prefix="HIPPO_", env_file=".env")
+    # extra="ignore": .env also holds provider keys (OPENAI_API_KEY etc.) that
+    # belong to the process environment, not to Settings.
+    model_config = SettingsConfigDict(env_prefix="HIPPO_", env_file=".env", extra="ignore")
 
     db_path: Path = Path("hippo.db")
     chat_model: str = "openai:gpt-5.2"
