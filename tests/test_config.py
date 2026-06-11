@@ -17,6 +17,13 @@ def test_defaults():
     assert s.max_tool_calls == 15
 
 
+def test_env_file_provider_keys_ignored(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("OPENAI_API_KEY=sk-test\nOPENAI_BASE_URL=http://x\nHIPPO_CHAT_MODEL=openai:foo\n")
+    s = Settings(_env_file=env)
+    assert s.chat_model == "openai:foo"
+
+
 def test_env_override(monkeypatch):
     monkeypatch.setenv("HIPPO_CHAT_MODEL", "anthropic:claude-opus-4-8")
     s = Settings(_env_file=None)

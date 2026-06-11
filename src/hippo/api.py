@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
@@ -59,7 +60,11 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
     async def ingest(file: UploadFile, _=Depends(verify_request)):
         raw = (await file.read()).decode("utf-8", errors="replace")
         suffix = Path(file.filename or "upload.md").suffix or ".md"
-        result = ingestor.ingest_text(file.filename or "upload.md", raw, suffix=suffix)
+        # Threadpool: ingestion blocks (embeddings + enrichment), and Enricher's
+        # run_sync cannot run on the event loop thread.
+        result = await run_in_threadpool(
+            ingestor.ingest_text, file.filename or "upload.md", raw, suffix=suffix
+        )
         if result.status == "failed":
             raise HTTPException(status_code=422, detail=result.error)
         return {"path": result.path, "status": result.status, "chunks": result.chunks}
@@ -87,8 +92,8 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
         folder = Path(body.location)
         if not folder.is_dir():
             raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
-        report = sync_folder(
-            folder, store, max_chars=settings.chunk_max_chars,
+        report = await run_in_threadpool(
+            sync_folder, folder, store, max_chars=settings.chunk_max_chars,
             overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
         )
         return {"report": {"added": report.added, "updated": report.updated,

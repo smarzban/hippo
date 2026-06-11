@@ -68,6 +68,34 @@ def test_chat_streams_vercel_protocol(client):
     assert "hi" in r.text and "from" in r.text and "hub" in r.text
 
 
+def test_ingest_with_enrichment_enabled(tmp_path, monkeypatch):
+    """Enricher.run_sync must work from API routes (event loop already running)."""
+    from hippo.enrich import Enricher
+
+    monkeypatch.setattr(
+        "hippo.api.Enricher", lambda model: Enricher(TestModel(custom_output_text="ctx line"))
+    )
+    settings = Settings(
+        _env_file=None,
+        db_path=tmp_path / "t.db",
+        embedding_model="fake",
+        embedding_dim=32,
+        enrich_enabled=True,
+    )
+    app = build_app(settings, model_override=TestModel(custom_output_text="hi"))
+    client = TestClient(app)
+
+    r = client.post("/ingest", files={"file": ("notes.md", b"# Notes\n\npolly webhook", "text/markdown")})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "added"
+
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (folder / "a.md").write_text("# A\n\nalpha")
+    r = client.post("/sources", json={"location": str(folder)})
+    assert r.json()["report"] == {"added": 1, "updated": 0, "skipped": 0, "removed": 0, "failed": 0}
+
+
 def test_ingest_rejects_unsupported_type(client):
     r = client.post("/ingest", files={"file": ("data.bin", b"\x00\x01", "application/octet-stream")})
     assert r.status_code == 422
