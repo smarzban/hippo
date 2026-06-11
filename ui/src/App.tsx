@@ -69,7 +69,7 @@ export default function App() {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask the hippo knowledge base…"
+          placeholder="Ask Hippo…"
           autoFocus
         />
         <button type="submit" disabled={status !== "ready"}>
