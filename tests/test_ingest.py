@@ -65,3 +65,23 @@ def test_sync_removes_deleted_files(store, tmp_path):
     report = sync_folder(tmp_path, store, max_chars=3000, overlap_chars=0)
     assert report.removed == 1
     assert len(store.list_documents()) == 1
+
+
+def test_db_and_dotfiles_ignored_by_sync(store, tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# A\n\nalpha")
+    (docs / "hub.db").write_bytes(b"\x00")
+    (docs / "hub.db-wal").write_bytes(b"\x00")
+    (docs / ".hidden.md").write_text("# Hidden\n\nnope")
+    report = sync_folder(docs, store, max_chars=3000, overlap_chars=0)
+    assert report.added == 1 and report.failed == 0
+
+
+def test_empty_file_skipped_not_ghosted(store, tmp_path):
+    docs = tmp_path / "docs2"
+    docs.mkdir()
+    (docs / "empty.md").write_text("")
+    report = sync_folder(docs, store, max_chars=3000, overlap_chars=0)
+    assert report.skipped == 1 and report.added == 0
+    assert store.list_documents() == []

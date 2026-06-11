@@ -68,6 +68,8 @@ class Ingestor:
             return IngestResult(path=name, status="failed", error=str(e))
 
     def _index(self, path: str, title: str, md: str, *, source_type: str, source_id: int | None) -> IngestResult:
+        if not md.strip():
+            return IngestResult(path=path, status="skipped")  # no ghost documents
         content_hash = hashlib.sha256(md.encode()).hexdigest()
         existed = self.store.con.execute(
             "SELECT 1 FROM documents WHERE path=?", (path,)
@@ -92,6 +94,18 @@ class Ingestor:
         return IngestResult(path=path, status="updated" if existed else "added", chunks=len(chunks))
 
 
+# infrastructure noise we never even try to ingest (vs unsupported docs, which
+# we attempt so they surface in the failure report)
+IGNORED_EXTENSIONS = {".db", ".db-wal", ".db-shm", ".sqlite", ".pyc"}
+IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv"}
+
+
+def _ignored(path: Path) -> bool:
+    if path.suffix.lower() in IGNORED_EXTENSIONS or path.name.startswith("."):
+        return True
+    return any(part in IGNORED_DIRS for part in path.parts)
+
+
 def sync_folder(folder: Path, store: Storage, *, max_chars: int, overlap_chars: int, enricher=None) -> SyncReport:
     """Sync one folder: ingest new/changed, remove vanished. Per-file isolation."""
     source_id = store.register_source("folder", str(folder))
@@ -99,6 +113,8 @@ def sync_folder(folder: Path, store: Storage, *, max_chars: int, overlap_chars: 
     report = SyncReport()
     seen: set[str] = set()
     for path in sorted(folder.rglob("*")):
+        if _ignored(path):
+            continue
         if path.is_file() and path.suffix.lower() in SUPPORTED:
             seen.add(str(path))
             report.results.append(ing.ingest_file(path, source_type="folder", source_id=source_id))
