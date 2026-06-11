@@ -62,6 +62,8 @@ class Ingestor:
 
     def ingest_text(self, name: str, raw: str, *, suffix: str = ".md", source_type: str = "upload") -> IngestResult:
         try:
+            if suffix.lower() not in SUPPORTED:
+                raise ValueError(f"unsupported file type: {suffix}")
             title, md = parse_content(name, raw, suffix)
             return self._index(f"upload/{name}", title, md, source_type=source_type, source_id=None)
         except Exception as e:
