@@ -3,12 +3,6 @@ from knowledgehub.db import connect
 
 def test_schema_created(tmp_path):
     con = connect(tmp_path / "t.db", embedding_dim=32)
-    tables = {
-        r[0]
-        for r in con.execute(
-            "SELECT name FROM sqlite_master WHERE type IN ('table','virtual table') OR type='table'"
-        )
-    }
     names = {r[0] for r in con.execute("SELECT name FROM sqlite_master")}
     for required in ("meta", "sources", "documents", "chunks", "chunks_fts", "chunk_vec"):
         assert required in names, f"missing {required}"
