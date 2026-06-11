@@ -34,7 +34,7 @@ An agentic knowledge hub ("team brain"): documents go in (markdown, text, Google
 | API | **FastAPI** | Streams the Vercel AI Data Stream Protocol; Pydantic-native |
 | Storage | **SQLite + sqlite-vec + FTS5** | Hybrid search in one embedded file; zero infra; exact search is fast at this corpus scale (≤ ~500K chunks) |
 | Frontend | **React chat UI over the Vercel AI protocol** (start from `pydantic/ai-chat-ui`) | Officially supported Pydantic AI integration; streaming, tool-call progress display, upload support |
-| Embeddings | Provider-agnostic (Voyage / OpenAI / Ollama via config) | Model name stamped per vector; `reindex` command for model swaps |
+| Embeddings | Provider-agnostic via config; **default: OpenAI `text-embedding-3-small`** (cheap, ubiquitous), swappable to Voyage / Ollama | Model name stamped per vector; `reindex` command for model swaps |
 | Enrichment model | Cheap/small model via config | Contextual lines + document summaries at ingestion |
 
 **Storage exit ramp:** the agent and ingestion code call a storage interface (`search_hybrid`, `get_document`, `add_document`, …), never SQL directly. Team-scale deployment reimplements that interface on Postgres + pgvector + Postgres FTS. SQLite's single-writer limit is the known trigger (multiple concurrent connectors + heavy team usage); WAL mode handles v1's one-writer-many-readers pattern.
