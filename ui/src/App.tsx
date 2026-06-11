@@ -23,7 +23,7 @@ export default function App() {
   return (
     <div className="app">
       <header>
-        <h1>Knowledge Hub</h1>
+        <h1>Hippo</h1>
         <div className="upload">
           <input
             type="file"
@@ -69,7 +69,7 @@ export default function App() {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask the knowledge hub…"
+          placeholder="Ask the hippo knowledge base…"
           autoFocus
         />
         <button type="submit" disabled={status !== "ready"}>

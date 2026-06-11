@@ -1024,6 +1024,51 @@ wheels = [
 ]
 
 [[package]]
+name = "hippo"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastapi" },
+    { name = "markdownify" },
+    { name = "pydantic-ai" },
+    { name = "pydantic-settings" },
+    { name = "python-multipart" },
+    { name = "pyyaml" },
+    { name = "sqlite-vec" },
+    { name = "typer" },
+    { name = "uvicorn" },
+    { name = "watchfiles" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "anyio" },
+    { name = "httpx" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi" },
+    { name = "markdownify" },
+    { name = "pydantic-ai" },
+    { name = "pydantic-settings" },
+    { name = "python-multipart" },
+    { name = "pyyaml" },
+    { name = "sqlite-vec" },
+    { name = "typer" },
+    { name = "uvicorn" },
+    { name = "watchfiles" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "anyio" },
+    { name = "httpx" },
+    { name = "pytest" },
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1350,51 +1395,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/43/4b/674af6ef2f97d56f0ab5153bf0bfa28ccb6c3ed4d1babf4305449668807b/keyring-25.7.0.tar.gz", hash = "sha256:fe01bd85eb3f8fb3dd0405defdeac9a5b4f6f0439edbb3149577f244a2e8245b", size = 63516, upload-time = "2025-11-16T16:26:09.482Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/81/db/e655086b7f3a705df045bf0933bdd9c2f79bb3c97bfef1384598bb79a217/keyring-25.7.0-py3-none-any.whl", hash = "sha256:be4a0b195f149690c166e850609a477c532ddbfbaed96a404d4e43f8d5e2689f", size = 39160, upload-time = "2025-11-16T16:26:08.402Z" },
-]
-
-[[package]]
-name = "knowledgehub"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fastapi" },
-    { name = "markdownify" },
-    { name = "pydantic-ai" },
-    { name = "pydantic-settings" },
-    { name = "python-multipart" },
-    { name = "pyyaml" },
-    { name = "sqlite-vec" },
-    { name = "typer" },
-    { name = "uvicorn" },
-    { name = "watchfiles" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "anyio" },
-    { name = "httpx" },
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi" },
-    { name = "markdownify" },
-    { name = "pydantic-ai" },
-    { name = "pydantic-settings" },
-    { name = "python-multipart" },
-    { name = "pyyaml" },
-    { name = "sqlite-vec" },
-    { name = "typer" },
-    { name = "uvicorn" },
-    { name = "watchfiles" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "anyio" },
-    { name = "httpx" },
-    { name = "pytest" },
 ]
 
 [[package]]

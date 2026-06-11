@@ -1,4 +1,4 @@
-from knowledgehub.chunking import Chunk, chunk_markdown
+from hippo.chunking import Chunk, chunk_markdown
 
 
 def test_heading_path_recorded():

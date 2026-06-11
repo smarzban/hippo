@@ -1,16 +1,16 @@
 from typer.testing import CliRunner
 
-from knowledgehub.cli import app
+from hippo.cli import app
 
 runner = CliRunner()
 
 
 def _env(tmp_path):
     return {
-        "HUB_DB_PATH": str(tmp_path / "t.db"),
-        "HUB_EMBEDDING_MODEL": "fake",
-        "HUB_EMBEDDING_DIM": "32",
-        "HUB_ENRICH_ENABLED": "false",
+        "HIPPO_DB_PATH": str(tmp_path / "t.db"),
+        "HIPPO_EMBEDDING_MODEL": "fake",
+        "HIPPO_EMBEDDING_DIM": "32",
+        "HIPPO_ENRICH_ENABLED": "false",
     }
 
 

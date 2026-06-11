@@ -4,11 +4,11 @@ from pydantic_ai import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from knowledgehub.agent import HubDeps, build_agent
-from knowledgehub.chunking import Chunk
-from knowledgehub.db import connect
-from knowledgehub.embeddings import FakeEmbedder
-from knowledgehub.storage import Storage
+from hippo.agent import HubDeps, build_agent
+from hippo.chunking import Chunk
+from hippo.db import connect
+from hippo.embeddings import FakeEmbedder
+from hippo.storage import Storage
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False
 pytestmark = pytest.mark.anyio

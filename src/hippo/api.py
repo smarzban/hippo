@@ -39,7 +39,7 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
     agent = build_agent(model_override or settings.chat_model)
     deps = HubDeps(store=store)
 
-    app = FastAPI(title="Knowledge Hub")
+    app = FastAPI(title="Hippo")
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
     )

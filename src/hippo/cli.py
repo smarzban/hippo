@@ -9,7 +9,7 @@ from .enrich import Enricher
 from .ingest import Ingestor, sync_folder
 from .storage import Storage
 
-app = typer.Typer(help="Knowledge hub: ingest documents, search, serve.")
+app = typer.Typer(help="Hippo: ingest documents, search, serve.")
 
 
 def _store(settings: Settings) -> tuple[Storage, Ingestor]:
@@ -33,7 +33,7 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
     def run_all() -> None:
         folders = [Path(folder)] if folder else [Path(loc) for _, kind, loc in store.list_sources() if kind == "folder"]
         if not folders:
-            typer.echo("no sources registered; run: hub sync <folder>")
+            typer.echo("no sources registered; run: hippo sync <folder>")
             raise typer.Exit(1)
         for f in folders:
             report = sync_folder(

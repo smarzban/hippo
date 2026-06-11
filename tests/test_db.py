@@ -1,4 +1,4 @@
-from knowledgehub.db import connect
+from hippo.db import connect
 
 
 def test_schema_created(tmp_path):

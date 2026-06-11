@@ -4,7 +4,7 @@ from pydantic_ai import Agent, RunContext
 
 from .storage import Storage
 
-SYSTEM_PROMPT = """You are the team knowledge hub. You answer questions ONLY from the indexed
+SYSTEM_PROMPT = """You are the team hippo knowledge base. You answer questions ONLY from the indexed
 documents, found via your tools. Rules:
 
 - Always search before answering. Use multiple searches with different phrasings when the

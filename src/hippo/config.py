@@ -4,11 +4,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """All knobs. Override via env vars prefixed HUB_ (e.g. HUB_CHAT_MODEL)."""
+    """All knobs. Override via env vars prefixed HIPPO_ (e.g. HIPPO_CHAT_MODEL)."""
 
-    model_config = SettingsConfigDict(env_prefix="HUB_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="HIPPO_", env_file=".env")
 
-    db_path: Path = Path("hub.db")
+    db_path: Path = Path("hippo.db")
     chat_model: str = "openai:gpt-5.2"
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
