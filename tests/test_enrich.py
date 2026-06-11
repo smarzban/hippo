@@ -28,3 +28,8 @@ def test_enricher_feeds_embedding_inputs(tmp_path):
     assert res.status == "added"
     doc = store.list_documents()[0]
     assert doc.summary == "ctxline"
+
+
+def test_enricher_constructs_without_api_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    Enricher("openai:gpt-5-mini")  # must not raise at construction

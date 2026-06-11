@@ -18,7 +18,11 @@ class Enricher:
 
     def __init__(self, model):
         # model: a pydantic-ai model name string ("openai:gpt-5-mini") or Model instance (TestModel in tests)
-        self._agent = Agent(model, system_prompt="You annotate documents for a search index. Be terse.")
+        self._agent = Agent(
+            model,
+            system_prompt="You annotate documents for a search index. Be terse.",
+            defer_model_check=True,
+        )
 
     def summarize(self, title: str, content: str) -> str:
         prompt = SUMMARY_PROMPT.format(title=title, content=content[:20000])

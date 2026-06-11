@@ -66,3 +66,9 @@ def test_chat_streams_vercel_protocol(client):
     assert "text/event-stream" in r.headers["content-type"]
     # TestModel streams each word as a separate delta; check all words present
     assert "hi" in r.text and "from" in r.text and "hub" in r.text
+
+
+def test_ingest_rejects_unsupported_type(client):
+    r = client.post("/ingest", files={"file": ("data.bin", b"\x00\x01", "application/octet-stream")})
+    assert r.status_code == 422
+    assert "unsupported" in r.json()["detail"]
