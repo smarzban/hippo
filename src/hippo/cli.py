@@ -19,6 +19,7 @@ def _store(settings: Settings) -> tuple[Storage, Ingestor]:
     ing = Ingestor(
         store, max_chars=settings.chunk_max_chars,
         overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+        max_doc_chars=settings.max_doc_chars,
     )
     return store, ing
 
@@ -96,6 +97,7 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
             report = sync_folder(
                 f, store, max_chars=settings.chunk_max_chars,
                 overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+                max_doc_chars=settings.max_doc_chars,
             )
             typer.echo(f"{f}: {report.summary()}")
 
@@ -144,6 +146,7 @@ def reindex():
 @app.command()
 def serve(host: str = "127.0.0.1", port: int = 8000):
     """Run the API server."""
+    import logging
     import uvicorn
 
     from .api import build_app
@@ -156,7 +159,23 @@ def serve(host: str = "127.0.0.1", port: int = 8000):
             f"HIPPO_AUTH_MODE=oidc|iap before exposing Hippo beyond localhost.",
             fg=typer.colors.RED, err=True,
         )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.getLogger("hippo").info("serving on %s:%d (auth_mode=%s)", host, port, settings.auth_mode)
     uvicorn.run(build_app(settings), host=host, port=port)
+
+
+@app.command()
+def backup(dest: str):
+    """Write a consistent snapshot of the database to DEST (VACUUM INTO)."""
+    import sqlite3
+    settings = Settings()
+    store, _ = _store(settings)
+    try:
+        store.backup(dest)
+    except sqlite3.Error as e:
+        typer.echo(f"backup failed: {e} (does {dest} already exist?)", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"backup written to {dest}")
 
 
 @app.command()

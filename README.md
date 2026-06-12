@@ -34,6 +34,9 @@ Spec: `docs/superpowers/specs/2026-06-11-knowledge-hub-design.md` · Decisions: 
 | `HIPPO_GITHUB_DOCS_REPO` | _(unset)_ | `owner/repo` for developer doc uploads |
 | `HIPPO_GITHUB_MANAGERS_REPO` | _(unset)_ | `owner/repo` for manager doc uploads |
 | `HIPPO_GITHUB_BRANCH` | `main` | branch to commit uploaded files to |
+| `HIPPO_MAX_UPLOAD_BYTES` | `10485760` | reject multipart uploads larger than this (413) |
+| `HIPPO_MAX_DOC_CHARS` | `1000000` | skip docs exceeding this char count before embedding (status: `skipped`) |
+| `HIPPO_UI_DIST` | _(unset)_ | path to built UI (`ui/dist`) for FastAPI to serve on one origin; set automatically in the Docker image |
 
 ## Authentication
 
@@ -62,6 +65,18 @@ Hippo supports three auth modes, set via `HIPPO_AUTH_MODE`:
     hippo token create EMAIL        # create a bearer token for headless access
     hippo token list EMAIL          # list a user's tokens (never the secret)
     hippo token revoke EMAIL ID     # revoke a token by id
+
+## Running with Docker
+
+    docker compose up --build
+
+`.env` must exist with at least `OPENAI_API_KEY` (or remove the `env_file` line from `compose.yaml` if you wire env vars another way). For a host Ollama instance set `OPENAI_BASE_URL=http://host.docker.internal:11434/v1`. The image is multi-stage; the final stage serves both the API and the built UI on a single origin at `:8000`.
+
+## Backups
+
+    hippo backup snapshot.db
+
+Writes a consistent single-file snapshot via SQLite `VACUUM INTO`. Safe regardless of WAL state — no need to pause writes or copy WAL files separately.
 
 ## Tests
 

@@ -210,6 +210,16 @@ main { flex: 1; overflow-y: auto; padding: 1.25rem 0; }
 .source-link .sec { color: var(--muted); }
 .source-dead { color: var(--muted); }
 
+.no-sources {
+  margin: 10px 0 0;
+  font-size: 0.75rem;
+  color: #9a6700;
+  opacity: 0.85;
+}
+@media (prefers-color-scheme: dark) {
+  .no-sources { color: #c99430; }
+}
+
 /* doc drawer */
 .drawer-backdrop {
   position: fixed;
