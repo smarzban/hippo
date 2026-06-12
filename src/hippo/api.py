@@ -52,7 +52,8 @@ def _exchange_code_with_google(code: str, settings: Settings) -> dict:
 
 
 def build_app(settings: Settings | None = None, model_override=None, *,
-              iap_verifier=None, code_exchanger=None, github_factory=None) -> FastAPI:
+              iap_verifier=None, code_exchanger=None, google_key_fetcher=None,
+              github_factory=None) -> FastAPI:
     settings = settings or Settings()
     con = connect(settings.db_path, embedding_dim=settings.embedding_dim)
     embedder = build_embedder(settings)
@@ -144,7 +145,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 raise HTTPException(status_code=400, detail="state mismatch")
             tokens = await run_in_threadpool(exchange, code, settings)
             try:
-                email = validate_google_id_token(tokens.get("id_token", ""), settings.oidc_client_id)
+                email = validate_google_id_token(
+                    tokens.get("id_token", ""), settings.oidc_client_id,
+                    key_fetcher=google_key_fetcher,
+                )
                 check_domain(email, settings.allowed_domain)
             except AuthError as e:
                 raise HTTPException(status_code=403, detail=str(e))

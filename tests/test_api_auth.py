@@ -3,12 +3,17 @@ import time
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from hippo.api import build_app
 from hippo.auth import IapVerifier
 from hippo.chunking import Chunk
 from hippo.config import Settings
+
+# Module-level RSA key for OIDC flow tests — generated once, shared across tests.
+_OIDC_RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_OIDC_KEY_FETCHER = lambda: {"oidc1": _OIDC_RSA_KEY.public_key()}  # noqa: E731
 
 AUD = "/projects/1/global/backendServices/2"
 
@@ -92,14 +97,15 @@ def _fake_exchange():
 
     def exchange(code, settings):
         assert code == "authcode"
-        return {"id_token": jwt.encode(claims, "test-secret-key-32-bytes-long!!", algorithm="HS256")}
+        return {"id_token": jwt.encode(claims, _OIDC_RSA_KEY, algorithm="RS256",
+                                       headers={"kid": "oidc1"})}
     return exchange
 
 
 def _oidc_app(tmp_path):
     s = _settings(tmp_path, auth_mode="oidc", secret_key="s3cret",
                   oidc_client_id="cid", oidc_client_secret="cs")
-    return build_app(s, code_exchanger=_fake_exchange())
+    return build_app(s, code_exchanger=_fake_exchange(), google_key_fetcher=_OIDC_KEY_FETCHER)
 
 
 def test_oidc_full_flow_sets_session(tmp_path):
