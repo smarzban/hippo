@@ -40,3 +40,24 @@ def test_fts_sync_triggers(tmp_path):
     assert hit is not None
     con.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
     assert con.execute("SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH '\"hello\"'").fetchone()[0] == 0
+
+
+def _cols(con, table):
+    return {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+
+
+def test_users_and_tokens_tables(tmp_path):
+    con = connect(tmp_path / "t.db", embedding_dim=8)
+    assert _cols(con, "users") >= {"email", "role", "created_at"}
+    assert _cols(con, "tokens") >= {"token_hash", "email", "name"}
+
+
+def test_sources_access_column_added_to_existing_db(tmp_path):
+    """Pre-auth databases must gain sources.access on reopen (migration)."""
+    db = tmp_path / "old.db"
+    con = connect(db, embedding_dim=8)
+    con.execute("ALTER TABLE sources DROP COLUMN access")  # simulate a v1 db
+    con.commit()
+    con.close()
+    con2 = connect(db, embedding_dim=8)
+    assert "access" in _cols(con2, "sources")

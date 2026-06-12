@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS sources (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL DEFAULT 'folder',
     location TEXT NOT NULL UNIQUE,
+    access TEXT NOT NULL DEFAULT 'everyone',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -47,6 +48,21 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
     INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO chunks_fts(rowid, text) VALUES (new.id, new.text);
 END;
+
+CREATE TABLE IF NOT EXISTS users (
+    email TEXT PRIMARY KEY,
+    role TEXT NOT NULL DEFAULT 'developer'
+        CHECK (role IN ('developer','manager','admin')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS tokens (
+    id INTEGER PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+    name TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -59,6 +75,11 @@ def connect(db_path: Path | str, embedding_dim: int) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode = WAL")
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(SCHEMA)
+    # migration: pre-auth dbs lack sources.access (ALTER can't add a CHECK;
+    # Storage validates the value instead)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(sources)")}
+    if "access" not in cols:
+        con.execute("ALTER TABLE sources ADD COLUMN access TEXT NOT NULL DEFAULT 'everyone'")
     con.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vec USING vec0(embedding float[{int(embedding_dim)}])"
     )
