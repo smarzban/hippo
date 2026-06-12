@@ -1053,20 +1053,20 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi" },
+    { name = "fastapi", specifier = ">=0.136.3" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
-    { name = "markdownify" },
-    { name = "pydantic-ai" },
-    { name = "pydantic-settings" },
+    { name = "markdownify", specifier = ">=1.2.2" },
+    { name = "pydantic-ai", specifier = ">=1.107.0" },
+    { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13.0" },
-    { name = "python-multipart" },
-    { name = "pyyaml" },
+    { name = "python-multipart", specifier = ">=0.0.32" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "regex", specifier = ">=2024.0.0" },
-    { name = "sqlite-vec" },
-    { name = "typer" },
-    { name = "uvicorn" },
-    { name = "watchfiles" },
+    { name = "sqlite-vec", specifier = ">=0.1.9" },
+    { name = "typer", specifier = ">=0.25.1" },
+    { name = "uvicorn", specifier = ">=0.49.0" },
+    { name = "watchfiles", specifier = ">=1.2.0" },
 ]
 
 [package.metadata.requires-dev]
