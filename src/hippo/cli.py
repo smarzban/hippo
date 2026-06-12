@@ -145,6 +145,7 @@ def reindex():
 @app.command()
 def serve(host: str = "127.0.0.1", port: int = 8000):
     """Run the API server."""
+    import logging
     import uvicorn
 
     from .api import build_app
@@ -157,6 +158,8 @@ def serve(host: str = "127.0.0.1", port: int = 8000):
             f"HIPPO_AUTH_MODE=oidc|iap before exposing Hippo beyond localhost.",
             fg=typer.colors.RED, err=True,
         )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.getLogger("hippo").info("serving on %s:%d (auth_mode=%s)", host, port, settings.auth_mode)
     uvicorn.run(build_app(settings), host=host, port=port)
 
 

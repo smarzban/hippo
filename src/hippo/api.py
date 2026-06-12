@@ -1,9 +1,12 @@
 import hashlib
+import logging
 import re
 import secrets
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlencode
+
+log = logging.getLogger("hippo.auth")
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -103,6 +106,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         try:
             check_domain(email, settings.allowed_domain)
         except AuthError as e:
+            log.warning("auth denied: domain not allowed for %s", email)
             raise HTTPException(status_code=403, detail=str(e))
         role = store.ensure_user(email)
         if email in settings.admin_email_list:
@@ -115,6 +119,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if authz.lower().startswith("bearer "):
             email = store.resolve_token(authz[7:].strip())
             if email is None:
+                log.warning("auth denied: invalid bearer token")
                 raise HTTPException(status_code=401, detail="invalid token")
             return _user_for(email)
         if settings.auth_mode == "none":
@@ -122,13 +127,16 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if settings.auth_mode == "iap":
             assertion = request.headers.get("x-goog-iap-jwt-assertion", "")
             if not assertion:
+                log.warning("auth denied: missing IAP assertion")
                 raise HTTPException(status_code=401, detail="missing IAP assertion")
             try:
                 return _user_for(iap.verify(assertion))
             except AuthError as e:
+                log.warning("auth denied (iap): %s", e)
                 raise HTTPException(status_code=401, detail=str(e))
         email = request.session.get("email", "")  # oidc: session cookie (Task 10)
         if not email:
+            log.warning("auth denied: no session")
             raise HTTPException(status_code=401, detail="not signed in")
         return _user_for(email)
 
