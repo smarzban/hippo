@@ -18,4 +18,6 @@ RUN uv sync --no-dev --frozen
 COPY --from=ui-build /ui/dist ./ui/dist
 ENV HIPPO_UI_DIST=/app/ui/dist
 EXPOSE 8000
-CMD ["uv", "run", "hippo", "serve", "--host", "0.0.0.0"]
+# --no-sync: the image is already synced at build time; skip uv's runtime
+# re-sync so startup is fast and the container needs no build tooling at launch.
+CMD ["uv", "run", "--no-sync", "hippo", "serve", "--host", "0.0.0.0"]
