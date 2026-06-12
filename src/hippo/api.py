@@ -7,18 +7,13 @@ from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from pydantic_ai.usage import UsageLimits
 
 from .agent import HubDeps, build_agent
+from .auth import AuthError, AuthenticatedUser, IapVerifier, check_domain
 from .config import Settings
 from .db import connect
 from .embeddings import build_embedder
 from .enrich import Enricher
 from .ingest import Ingestor, sync_folder
 from .storage import Storage
-
-
-async def verify_request(request: Request) -> None:
-    """Auth stub. v1 is local/single-user; team deployment implements this one
-    function (e.g. check an API key header) instead of retrofitting routes."""
-    return None
 
 
 class SourceIn(BaseModel):
@@ -36,7 +31,8 @@ def _usage_limits(settings: Settings) -> UsageLimits:
     )
 
 
-def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
+def build_app(settings: Settings | None = None, model_override=None, *,
+              iap_verifier=None, code_exchanger=None, github_factory=None) -> FastAPI:
     settings = settings or Settings()
     con = connect(settings.db_path, embedding_dim=settings.embedding_dim)
     embedder = build_embedder(settings)
@@ -47,9 +43,9 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
         overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
     )
     agent = build_agent(model_override or settings.chat_model)
-    deps = HubDeps(store=store, role="admin")  # Task 9 makes this per-request
 
     app = FastAPI(title="Hippo")
+    app.state.store = store
     # No CORS middleware: the React UI reaches the API same-origin through the Vite
     # dev-server proxy, so cross-origin access is never needed. A permissive
     # allow_origins=["*"] would let any website you visit read /documents, /sources,
@@ -57,12 +53,64 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
     # info-leak with no benefit here. Real auth + an explicit origin policy land with
     # team deployment (see verify_request).
 
+    iap = iap_verifier or (IapVerifier(settings.iap_audience) if settings.auth_mode == "iap" else None)
+
+    def _user_for(email: str) -> AuthenticatedUser:
+        try:
+            check_domain(email, settings.allowed_domain)
+        except AuthError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        role = store.ensure_user(email)
+        if email.lower() in settings.admin_email_list:
+            role = "admin"  # env bootstrap always wins (spec §1)
+        return AuthenticatedUser(email=email, role=role)
+
+    async def verify_request(request: Request) -> AuthenticatedUser:
+        # Bearer tokens are accepted in every mode (MCP/CLI clients, spec §1).
+        authz = request.headers.get("authorization", "")
+        if authz.lower().startswith("bearer "):
+            email = store.resolve_token(authz[7:].strip())
+            if email is None:
+                raise HTTPException(status_code=401, detail="invalid token")
+            return _user_for(email)
+        if settings.auth_mode == "none":
+            return AuthenticatedUser(email="local", role="admin")
+        if settings.auth_mode == "iap":
+            assertion = request.headers.get("x-goog-iap-jwt-assertion", "")
+            if not assertion:
+                raise HTTPException(status_code=401, detail="missing IAP assertion")
+            try:
+                return _user_for(iap.verify(assertion))
+            except AuthError as e:
+                raise HTTPException(status_code=401, detail=str(e))
+        email = request.session.get("email", "")  # oidc: session cookie (Task 10)
+        if not email:
+            raise HTTPException(status_code=401, detail="not signed in")
+        return _user_for(email)
+
+    async def require_admin(user: AuthenticatedUser = Depends(verify_request)) -> AuthenticatedUser:
+        if user.role != "admin":
+            raise HTTPException(status_code=403, detail="admin only")
+        return user
+
     @app.get("/health")
     async def health(_=Depends(verify_request)):
         return {"status": "ok"}
 
+    @app.get("/me")
+    async def me(user: AuthenticatedUser = Depends(verify_request)):
+        return {
+            "email": user.email, "role": user.role, "auth_mode": settings.auth_mode,
+            "upload": {
+                "team_repo": bool(settings.github_token and settings.github_docs_repo),
+                "managers_repo": bool(settings.github_token and settings.github_managers_repo)
+                                 and user.role in ("manager", "admin"),
+            },
+        }
+
     @app.post("/chat")
-    async def chat(request: Request, _=Depends(verify_request)):
+    async def chat(request: Request, user: AuthenticatedUser = Depends(verify_request)):
+        deps = HubDeps(store=store, role=user.role)
         return await VercelAIAdapter.dispatch_request(
             request, agent=agent, deps=deps, usage_limits=_usage_limits(settings)
         )
@@ -81,15 +129,15 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
         return {"path": result.path, "status": result.status, "chunks": result.chunks}
 
     @app.get("/documents")
-    async def documents(query: str | None = None, _=Depends(verify_request)):
+    async def documents(query: str | None = None, user: AuthenticatedUser = Depends(verify_request)):
         return [
             {"id": d.id, "path": d.path, "title": d.title, "summary": d.summary}
-            for d in store.list_documents(query=query, role="admin")
+            for d in store.list_documents(query=query, role=user.role)
         ]
 
     @app.get("/documents/{doc_id}")
-    async def document(doc_id: int, _=Depends(verify_request)):
-        doc = store.get_document(doc_id, role="admin")
+    async def document(doc_id: int, user: AuthenticatedUser = Depends(verify_request)):
+        doc = store.get_document(doc_id, role=user.role)
         if doc is None:
             raise HTTPException(status_code=404, detail="document not found")
         return {"id": doc.id, "path": doc.path, "title": doc.title, "content": doc.content, "summary": doc.summary}
