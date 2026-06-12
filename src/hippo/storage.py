@@ -180,15 +180,18 @@ class Storage:
 
     # -- sources -----------------------------------------------------------
 
-    def register_source(self, kind: str, location: str, access: str = "everyone") -> int:
-        if access not in ("everyone", "managers"):
+    def register_source(self, kind: str, location: str, access: str | None = None) -> int:
+        """Register (or re-register) a source. access=None preserves the existing
+        level — a plain re-sync must never demote a managers source — and defaults
+        new sources to 'everyone'."""
+        if access is not None and access not in ("everyone", "managers"):
             raise ValueError(f"invalid access {access!r}; expected 'everyone' or 'managers'")
         with self._lock:
             with self.con:
                 self.con.execute(
-                    "INSERT INTO sources(kind, location, access) VALUES (?,?,?) "
-                    "ON CONFLICT(location) DO UPDATE SET access=excluded.access",
-                    (kind, location, access),
+                    "INSERT INTO sources(kind, location, access) VALUES (?,?,COALESCE(?, 'everyone')) "
+                    "ON CONFLICT(location) DO UPDATE SET access=COALESCE(?, sources.access)",
+                    (kind, location, access, access),
                 )
             return self.con.execute(
                 "SELECT id FROM sources WHERE location=?", (location,)

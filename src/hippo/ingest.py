@@ -112,7 +112,7 @@ def _ignored(path: Path) -> bool:
 
 
 def sync_folder(folder: Path, store: Storage, *, max_chars: int, overlap_chars: int,
-                enricher=None, access: str = "everyone") -> SyncReport:
+                enricher=None, access: str | None = None) -> SyncReport:
     """Sync one folder: ingest new/changed, remove vanished. Per-file isolation."""
     source_id = store.register_source("folder", str(folder), access=access)
     ing = Ingestor(store, max_chars=max_chars, overlap_chars=overlap_chars, enricher=enricher)
