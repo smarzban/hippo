@@ -60,6 +60,8 @@ Hippo supports three auth modes, set via `HIPPO_AUTH_MODE`:
     hippo role set EMAIL ROLE       # set user role (developer|manager|admin)
     hippo role list                 # list all users and their roles
     hippo token create EMAIL        # create a bearer token for headless access
+    hippo token list EMAIL          # list a user's tokens (never the secret)
+    hippo token revoke EMAIL ID     # revoke a token by id
 
 ## Tests
 

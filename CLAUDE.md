@@ -48,7 +48,7 @@ Vite dev-server proxies /chat,/ingest,/documents,/sources to :8000. Tool parts r
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (~104 tests, <2s, ZERO network — must stay that way)
+uv run pytest                      # full suite (~124 tests, <2s, ZERO network — must stay that way)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all registered sources
 uv run hippo serve                 # API :8000
 cd ui && npm run dev               # chat UI :5173
@@ -81,7 +81,7 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 
 v1 + review-hardening merged to main: storage/hybrid search, ingestion (folder sync + upload),
 enrichment, agent, API, CLI, React UI, eval harness. PR #2 landed two independent-review passes
-(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 104/104 tests,
+(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 124/124 tests,
 eval 4/4 on seed fixtures, UI builds clean. Roadmap items 1+2 (auth/roles/sources) implemented on
 branch `build/auth-and-sources` (PR pending).
 
