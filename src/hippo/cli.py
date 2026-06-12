@@ -75,28 +75,13 @@ def search(query: str, top_k: int = 5):
 
 @app.command()
 def reindex():
-    """Re-embed every chunk (after changing embedding model). Rebuilds chunk_vec."""
+    """Re-embed every chunk (after changing embedding model). Rebuilds chunk_vec.
+
+    Safe: embeds everything before swapping, so a failure leaves the old index intact."""
     settings = Settings()
     store, _ = _store(settings)
-    con = store.con
-    con.execute("DROP TABLE IF EXISTS chunk_vec")
-    con.execute(f"CREATE VIRTUAL TABLE chunk_vec USING vec0(embedding float[{settings.embedding_dim}])")
-    rows = list(con.execute("SELECT id, text FROM chunks ORDER BY id"))
-    import sqlite_vec
-
-    batch = 64
-    for i in range(0, len(rows), batch):
-        part = rows[i : i + batch]
-        vecs = store.embedder.embed([t for _, t in part])
-        with con:
-            for (cid, _), v in zip(part, vecs):
-                con.execute("INSERT INTO chunk_vec(rowid, embedding) VALUES (?,?)", (cid, sqlite_vec.serialize_float32(v)))
-    with con:
-        con.execute(
-            "INSERT INTO meta(key, value) VALUES ('embedding_model', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (store.embedder.model,),
-        )
-    typer.echo(f"reindexed {len(rows)} chunks with {store.embedder.model}")
+    n = store.reindex(settings.embedding_dim)
+    typer.echo(f"reindexed {n} chunks with {store.embedder.model}")
 
 
 @app.command()

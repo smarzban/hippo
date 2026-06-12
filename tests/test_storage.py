@@ -72,3 +72,86 @@ def test_list_documents(store):
     assert len(docs) == 2
     filtered = store.list_documents(query="budget")
     assert len(filtered) == 1 and filtered[0].path == "other/budget.md"
+
+
+def test_orphan_vec_rowid_is_skipped_not_crash(store):
+    """L3: a chunk_vec rowid with no matching chunk (orphan) must be skipped by
+    search, not crash with SearchHit(*None)."""
+    _doc(store)
+    # forge an orphan vector row (rowid that no chunk references)
+    import sqlite_vec
+    store.con.execute(
+        "INSERT INTO chunk_vec(rowid, embedding) VALUES (?,?)",
+        (999999, sqlite_vec.serialize_float32([0.1] * 32)),
+    )
+    store.con.commit()
+    hits = store.search_hybrid("telegram webhook", top_k=8)
+    assert all(h is not None for h in hits)
+    assert 999999 not in [h.chunk_id for h in hits]
+
+
+def test_embedding_model_mismatch_refused(store):
+    """M3: the DB records its embedding model; ingesting with a different model
+    (same dim) must be refused rather than silently mixing embedding spaces."""
+    _doc(store)  # stamps model "fake"
+    other = FakeEmbedder(dim=32)
+    other.model = "some-other-model"
+    mixed = Storage(store.con, other)
+    with pytest.raises(ValueError, match="embedding model"):
+        _doc(mixed, path="new.md")
+
+
+def test_embedding_model_stamp_persists_and_matches(store):
+    _doc(store)
+    row = store.con.execute("SELECT value FROM meta WHERE key='embedding_model'").fetchone()
+    assert row[0] == "fake"
+    # same model is fine
+    _doc(store, path="second.md", text="another doc about slack")
+    assert len(store.list_documents()) == 2
+
+
+def test_reindex_rebuilds_vectors(store):
+    _doc(store)
+    n = store.reindex(embedding_dim=32)
+    assert n == 1
+    assert store.con.execute("SELECT count(*) FROM chunk_vec").fetchone()[0] == 1
+    # still searchable after rebuild
+    assert store.search_hybrid("telegram webhook", top_k=3)
+
+
+def test_reindex_failure_preserves_existing_vectors(store):
+    """M2: a mid-run embedding failure must NOT leave the index wiped."""
+    _doc(store)
+    _doc(store, path="b.md", text="another doc about slack channels")
+    before = store.con.execute("SELECT count(*) FROM chunk_vec").fetchone()[0]
+    assert before == 2
+
+    class FailingEmbedder:
+        model = "fake"
+        dim = 32
+
+        def embed(self, texts):
+            raise RuntimeError("simulated API failure")
+
+    broken = Storage(store.con, FailingEmbedder())
+    with pytest.raises(RuntimeError):
+        broken.reindex(embedding_dim=32)
+    after = store.con.execute("SELECT count(*) FROM chunk_vec").fetchone()[0]
+    assert after == before  # vectors intact, nothing destroyed
+
+
+def test_reindex_dim_mismatch_refused_before_destroying(store):
+    _doc(store)
+
+    class WrongDim:
+        model = "fake"
+        dim = 32
+
+        def embed(self, texts):
+            return [[0.0] * 8 for _ in texts]  # wrong dimension
+
+    broken = Storage(store.con, WrongDim())
+    before = store.con.execute("SELECT count(*) FROM chunk_vec").fetchone()[0]
+    with pytest.raises(ValueError, match="dimension"):
+        broken.reindex(embedding_dim=32)
+    assert store.con.execute("SELECT count(*) FROM chunk_vec").fetchone()[0] == before
