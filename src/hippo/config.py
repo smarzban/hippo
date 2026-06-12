@@ -21,6 +21,30 @@ class Settings(BaseSettings):
     max_tool_calls: int = 15
     search_top_k: int = 8
 
+    # --- auth (spec §1) ---
+    auth_mode: str = "none"  # none | oidc | iap
+    allowed_domain: str = ""  # e.g. superbalist.com; empty = any domain
+    admin_emails: str = ""  # comma-separated bootstrap admins (always admin)
+    secret_key: str = ""  # session-cookie signing; required in oidc mode
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    public_url: str = "http://localhost:8000"  # OIDC redirect URI base
+    iap_audience: str = ""  # /projects/<n>/global/backendServices/<m>
+    # --- sources / upload-to-repo (spec §1+2) ---
+    source_roots: str = ""  # colon-separated dirs /sources may register
+    github_token: str = ""
+    github_docs_repo: str = ""  # e.g. superbalist/hippo-docs
+    github_managers_repo: str = ""
+    github_branch: str = "main"
+
+    @property
+    def admin_email_list(self) -> set[str]:
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
+
+    @property
+    def source_root_list(self) -> list[Path]:
+        return [Path(p).resolve() for p in self.source_roots.split(":") if p.strip()]
+
 
 def get_settings() -> Settings:
     return Settings()
