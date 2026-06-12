@@ -8,6 +8,13 @@ import { buildDocIndex, type DocIndex, type DocMeta, MARKER_RE, processCitations
 
 type OpenDoc = { id: number; section: string };
 
+type Me = {
+  email: string;
+  role: string;
+  auth_mode: string;
+  upload: { team_repo: boolean; managers_repo: boolean };
+};
+
 function toolLabel(name: string | undefined, input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>;
   switch (name) {
@@ -111,6 +118,9 @@ export default function App() {
   const [uploadNote, setUploadNote] = useState("");
   const [docIndex, setDocIndex] = useState<DocIndex>(new Map());
   const [openDoc, setOpenDoc] = useState<OpenDoc | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
+  const [needsLogin, setNeedsLogin] = useState(false);
+  const [uploadRepo, setUploadRepo] = useState("team");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const refreshDocs = useCallback(() => {
@@ -125,6 +135,13 @@ export default function App() {
   }, [refreshDocs]);
 
   useEffect(() => {
+    fetch("/me").then((r) => {
+      if (r.status === 401) setNeedsLogin(true);
+      else if (r.ok) r.json().then(setMe);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages, status]);
 
@@ -133,15 +150,31 @@ export default function App() {
   async function upload(file: File) {
     const form = new FormData();
     form.append("file", file);
+    form.append("repo", uploadRepo);
     setUploadNote(`adding ${file.name}…`);
     const res = await fetch("/ingest", { method: "POST", body: form });
     const body = await res.json();
-    if (res.ok) {
-      setUploadNote(`added ${file.name} — ${body.chunks} chunks`);
-      refreshDocs();
-    } else {
+    if (!res.ok) {
       setUploadNote(`failed: ${body.detail}`);
+    } else if (body.status === "committed") {
+      setUploadNote(`committed ${file.name} to ${body.repo} — searchable after the next sync`);
+    } else {
+      setUploadNote(`added ${file.name} (unversioned) — ${body.chunks} chunks`);
+      refreshDocs();
     }
+  }
+
+  if (needsLogin) {
+    return (
+      <div className="app">
+        <div className="empty signin">
+          <span className="logo">{"\u{1F99B}"}</span>
+          <h1>Hippo</h1>
+          <p>Sign in with your Google account to continue.</p>
+          <a className="upload-btn" href="/auth/login">Sign in with Google</a>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -155,6 +188,18 @@ export default function App() {
           </div>
         </div>
         <div className="upload">
+          {me && me.auth_mode !== "none" && (
+            <span className="whoami">
+              {me.email} ({me.role})
+              {me.auth_mode === "oidc" && <> · <a href="/auth/logout">sign out</a></>}
+            </span>
+          )}
+          {me?.upload.managers_repo && (
+            <select value={uploadRepo} onChange={(e) => setUploadRepo(e.target.value)}>
+              <option value="team">team docs</option>
+              <option value="managers">managers docs</option>
+            </select>
+          )}
           <label className="upload-btn">
             Add doc
             <input
