@@ -271,6 +271,18 @@ def test_search_not_starved_by_higher_ranked_manager_chunks(store):
     assert all(not h.path.startswith("mgr/") for h in dev_hits)
 
 
+def test_user_email_is_case_normalized(store):
+    store.set_role("Foo@X.com", "manager")
+    assert store.ensure_user("foo@x.com") == "manager"   # same user regardless of casing
+    assert store.ensure_user("FOO@x.COM") == "manager"
+    assert store.list_users() == [("foo@x.com", "manager")]  # one row, normalized
+
+
+def test_token_email_normalized(store):
+    t = store.create_token("Bar@X.com")
+    assert store.resolve_token(t) == "bar@x.com"
+
+
 def test_fts_candidates_are_role_filtered(store):
     team = store.register_source("folder", "/r/team")
     mgr = store.register_source("folder", "/r/mgr", access="managers")
@@ -286,3 +298,23 @@ def test_fts_candidates_are_role_filtered(store):
         "SELECT document_id FROM chunks WHERE id IN (%s)" % ",".join(map(str, ids)))}
     assert rows <= team_doc_ids
     assert len(mgr_ids) == 10
+
+
+def test_token_revoke_and_list(store):
+    t1 = store.create_token("a@x.com", name="laptop")
+    store.create_token("a@x.com", name="ci")
+    rows = store.list_tokens("A@x.com")  # casing-insensitive
+    assert len(rows) == 2 and {r[1] for r in rows} == {"laptop", "ci"}
+    assert all(r[3] is None for r in rows)  # last_used_at null before use
+    assert store.resolve_token(t1) == "a@x.com"
+    assert store.list_tokens("a@x.com")[0][3] is not None  # last_used stamped
+    tid = rows[0][0]
+    assert store.revoke_token(tid, "a@x.com") is True
+    assert store.resolve_token(t1) is None  # revoked token no longer resolves
+    assert len(store.list_tokens("a@x.com")) == 1
+    assert store.revoke_token(tid, "a@x.com") is False  # already gone
+    # cannot revoke another user's token
+    t3 = store.create_token("b@x.com")
+    other_id = store.list_tokens("b@x.com")[0][0]
+    assert store.revoke_token(other_id, "a@x.com") is False
+    assert store.resolve_token(t3) == "b@x.com"

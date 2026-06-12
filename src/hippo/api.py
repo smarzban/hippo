@@ -83,12 +83,13 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     iap = iap_verifier or (IapVerifier(settings.iap_audience) if settings.auth_mode == "iap" else None)
 
     def _user_for(email: str) -> AuthenticatedUser:
+        email = email.strip().lower()
         try:
             check_domain(email, settings.allowed_domain)
         except AuthError as e:
             raise HTTPException(status_code=403, detail=str(e))
         role = store.ensure_user(email)
-        if email.lower() in settings.admin_email_list:
+        if email in settings.admin_email_list:
             role = "admin"  # env bootstrap always wins (spec §1)
         return AuthenticatedUser(email=email, role=role)
 

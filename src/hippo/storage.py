@@ -37,6 +37,10 @@ VALID_ROLES = ("developer", "manager", "admin")
 MANAGER_ROLES = ("manager", "admin")
 
 
+def _norm_email(e: str) -> str:
+    return e.strip().lower()
+
+
 def _visible(role: str, access: str | None) -> bool:
     """Source-level access check. access=None (uploads / no source) = everyone."""
     return role in MANAGER_ROLES or access != "managers"
@@ -233,6 +237,7 @@ class Storage:
 
     def ensure_user(self, email: str) -> str:
         """Create on first sight with the default role; return the current role."""
+        email = _norm_email(email)
         with self._lock:
             row = self.con.execute("SELECT role FROM users WHERE email=?", (email,)).fetchone()
             if row:
@@ -242,6 +247,7 @@ class Storage:
             return "developer"
 
     def set_role(self, email: str, role: str) -> None:
+        email = _norm_email(email)
         if role not in VALID_ROLES:
             raise ValueError(f"invalid role {role!r}; expected one of {VALID_ROLES}")
         with self._lock, self.con:
@@ -259,6 +265,7 @@ class Storage:
 
     def create_token(self, email: str, name: str = "") -> str:
         """Mint a bearer token for MCP/CLI clients. Only its sha256 is stored."""
+        email = _norm_email(email)
         token = "hk_" + secrets.token_urlsafe(32)
         self.ensure_user(email)
         digest = hashlib.sha256(token.encode()).hexdigest()

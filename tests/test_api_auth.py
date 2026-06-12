@@ -261,6 +261,14 @@ def test_ingest_commit_path_is_content_hash_qualified(tmp_path):
     assert r3.json()["path"] == p1
 
 
+def test_role_grant_applies_across_email_casing(tmp_path):
+    app, store, dev, boss = _iap_app_with_tokens(tmp_path)
+    store.set_role("Mole@x.com", "manager")           # admin grants with one casing
+    tok = store.create_token("mole@x.com")            # user logs in with another
+    c = TestClient(app)
+    assert c.get("/me", headers={"Authorization": f"Bearer {tok}"}).json()["role"] == "manager"
+
+
 def test_sources_listing_hides_manager_sources_from_developers(tmp_path):
     app, store, dev, boss = _iap_app_with_tokens(tmp_path)
     store.register_source("folder", "/r/team")
