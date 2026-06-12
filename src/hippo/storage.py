@@ -31,6 +31,15 @@ class SearchHit:
     score: float
 
 
+VALID_ROLES = ("developer", "manager", "admin")
+MANAGER_ROLES = ("manager", "admin")
+
+
+def _visible(role: str, access: str | None) -> bool:
+    """Source-level access check. access=None (uploads / no source) = everyone."""
+    return role in MANAGER_ROLES or access != "managers"
+
+
 class Storage:
     """All database access. The agent and ingestion never touch SQL directly."""
 
@@ -181,6 +190,32 @@ class Storage:
     def list_sources(self) -> list[tuple[int, str, str]]:
         with self._lock:
             return list(self.con.execute("SELECT id, kind, location FROM sources ORDER BY id"))
+
+    # -- users / roles -------------------------------------------------------
+
+    def ensure_user(self, email: str) -> str:
+        """Create on first sight with the default role; return the current role."""
+        with self._lock:
+            row = self.con.execute("SELECT role FROM users WHERE email=?", (email,)).fetchone()
+            if row:
+                return row[0]
+            with self.con:
+                self.con.execute("INSERT INTO users(email) VALUES (?)", (email,))
+            return "developer"
+
+    def set_role(self, email: str, role: str) -> None:
+        if role not in VALID_ROLES:
+            raise ValueError(f"invalid role {role!r}; expected one of {VALID_ROLES}")
+        with self._lock, self.con:
+            self.con.execute(
+                "INSERT INTO users(email, role) VALUES (?,?) "
+                "ON CONFLICT(email) DO UPDATE SET role=excluded.role",
+                (email, role),
+            )
+
+    def list_users(self) -> list[tuple[str, str]]:
+        with self._lock:
+            return list(self.con.execute("SELECT email, role FROM users ORDER BY email"))
 
     # -- search --------------------------------------------------------------
 

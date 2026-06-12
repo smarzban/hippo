@@ -155,3 +155,18 @@ def test_reindex_dim_mismatch_refused_before_destroying(store):
     with pytest.raises(ValueError, match="dimension"):
         broken.reindex(embedding_dim=32)
     assert store.con.execute("SELECT count(*) FROM chunk_vec").fetchone()[0] == before
+
+
+def test_ensure_user_defaults_developer(store):
+    assert store.ensure_user("a@x.com") == "developer"
+    assert store.ensure_user("a@x.com") == "developer"  # idempotent
+    assert store.list_users() == [("a@x.com", "developer")]
+
+
+def test_set_role_and_validation(store):
+    store.set_role("a@x.com", "manager")
+    assert store.ensure_user("a@x.com") == "manager"
+    store.set_role("new@x.com", "admin")  # creates the row too
+    assert ("new@x.com", "admin") in store.list_users()
+    with pytest.raises(ValueError):
+        store.set_role("a@x.com", "superuser")
