@@ -36,7 +36,9 @@ enrich.py      Enricher: doc summary + contextual line per chunk (cheap model; e
 github.py      GitHubContentsClient.put_file: upload-to-repo via Contents API (1 call/file)
 ingest.py      Ingestor: parse->hash dedupe->chunk->enrich->embed+index (1 txn/doc, per-file isolation);
                sync_folder() handles deletions + IGNORED_EXTENSIONS/DIRS noise filter
-parsers.py     .md/.txt/.html -> (title, canonical markdown). SUPPORTED set is the gate.
+parsers.py     .md/.txt/.html/.docx -> (title, canonical markdown). SUPPORTED set is the gate.
+               .docx via mammoth (docx -> HTML -> markdown, heading styles preserved).
+               parse_bytes(filename, data) is the canonical bytes entry point (used by /ingest).
 storage.py     Storage(con, embedder): ALL SQL lives here. upsert/delete/get/list docs,
                search_hybrid (FTS5 BM25 + vec KNN merged via RRF, k=60), grep (raises ValueError on bad regex/timeout/pattern-too-long).
                backup(path) via VACUUM INTO for consistent snapshots.
@@ -51,7 +53,7 @@ Vite dev-server proxies /chat,/ingest,/documents,/sources to :8000. Tool parts r
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (143 tests, <2s, ZERO network — must stay that way)
+uv run pytest                      # full suite (157 tests, <2s, ZERO network — must stay that way)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all registered sources
 uv run hippo serve                 # API :8000
 cd ui && npm run dev               # chat UI :5173
@@ -89,15 +91,16 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 
 v1 + review-hardening merged to main: storage/hybrid search, ingestion (folder sync + upload),
 enrichment, agent, API, CLI, React UI, eval harness. PR #2 landed two independent-review passes
-(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 143/143 tests,
+(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 157/157 tests,
 eval 4/4 on seed fixtures, UI builds clean. Roadmap items 1+2 (auth/roles/sources) implemented on
 branch `build/auth-and-sources` (PR pending). Roadmap item 3 (production-readiness: ingestion limits,
 grounding enforcement, grep hardening, chunk/drawer fixes, `hippo backup`, Docker, CI, logging)
-implemented on branch `build/production-readiness` (PR pending).
+implemented on branch `build/production-readiness` (PR #4 merged). Roadmap item 5 (.docx parsing via
+mammoth, `parse_bytes()` entry point, UI upload accepts .docx) implemented on branch
+`build/docx-parsing` (PR pending).
 
-**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. Next: **PDF/Word parsing**,
-**MCP server**. Then: scale (Postgres+pgvector), Slack, MCP client/connectors, settings UI.
+**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. Next: **MCP server**.
+Then: scale (Postgres+pgvector), Slack, MCP client/connectors, settings UI.
 
 **Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown), Slack bot
-(consumes POST /chat), PDF/docx parsers, Postgres+pgvector migration (reimplement Storage), real auth
-(implement `verify_request` in api.py), hierarchical summaries, GraphRAG.
+(consumes POST /chat), PDF parsing (planned), Postgres+pgvector migration (reimplement Storage), hierarchical summaries, GraphRAG.

@@ -82,6 +82,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         store, max_chars=settings.chunk_max_chars,
         overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
         max_doc_chars=settings.max_doc_chars,
+        max_decompressed_bytes=settings.max_decompressed_bytes,
     )
     agent = build_agent(model_override or settings.chat_model)
 
@@ -246,9 +247,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         # No GitHub configured (personal mode): direct, unversioned ingestion.
         # Threadpool: ingestion blocks (embeddings + enrichment), and Enricher's
         # run_sync cannot run on the event loop thread.
-        raw = raw_bytes.decode("utf-8", errors="replace")
         suffix = Path(name).suffix or ".md"
-        result = await run_in_threadpool(ingestor.ingest_text, name, raw, suffix=suffix)
+        result = await run_in_threadpool(ingestor.ingest_bytes, name, raw_bytes, suffix=suffix)
         if result.status == "failed":
             raise HTTPException(status_code=422, detail=result.error)
         return {"path": result.path, "status": result.status,
