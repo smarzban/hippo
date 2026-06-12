@@ -1,13 +1,17 @@
+import secrets
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from pydantic_ai.usage import UsageLimits
+from starlette.middleware.sessions import SessionMiddleware
+from starlette.responses import RedirectResponse
 
 from .agent import HubDeps, build_agent
-from .auth import AuthError, AuthenticatedUser, IapVerifier, check_domain
+from .auth import AuthError, AuthenticatedUser, IapVerifier, check_domain, validate_google_id_token
 from .config import Settings
 from .db import connect
 from .embeddings import build_embedder
@@ -29,6 +33,19 @@ def _usage_limits(settings: Settings) -> UsageLimits:
         tool_calls_limit=settings.max_tool_calls,
         request_limit=settings.max_tool_calls + 5,
     )
+
+
+def _exchange_code_with_google(code: str, settings: Settings) -> dict:
+    import httpx
+
+    r = httpx.post("https://oauth2.googleapis.com/token", data={
+        "code": code, "client_id": settings.oidc_client_id,
+        "client_secret": settings.oidc_client_secret,
+        "redirect_uri": f"{settings.public_url}/auth/callback",
+        "grant_type": "authorization_code",
+    }, timeout=10)
+    r.raise_for_status()
+    return r.json()
 
 
 def build_app(settings: Settings | None = None, model_override=None, *,
@@ -92,6 +109,45 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if user.role != "admin":
             raise HTTPException(status_code=403, detail="admin only")
         return user
+
+    if settings.auth_mode == "oidc":
+        if not settings.secret_key:
+            raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=oidc")
+        app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
+                           https_only=settings.public_url.startswith("https"))
+        exchange = code_exchanger or _exchange_code_with_google
+
+        @app.get("/auth/login")
+        async def auth_login(request: Request):
+            state = secrets.token_urlsafe(16)
+            request.session["oauth_state"] = state
+            params = {
+                "client_id": settings.oidc_client_id,
+                "redirect_uri": f"{settings.public_url}/auth/callback",
+                "response_type": "code", "scope": "openid email", "state": state,
+            }
+            if settings.allowed_domain:
+                params["hd"] = settings.allowed_domain  # UX hint; check_domain enforces
+            return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+
+        @app.get("/auth/callback")
+        async def auth_callback(request: Request, code: str, state: str):
+            if state != request.session.pop("oauth_state", None):
+                raise HTTPException(status_code=400, detail="state mismatch")
+            tokens = await run_in_threadpool(exchange, code, settings)
+            try:
+                email = validate_google_id_token(tokens.get("id_token", ""), settings.oidc_client_id)
+                check_domain(email, settings.allowed_domain)
+            except AuthError as e:
+                raise HTTPException(status_code=403, detail=str(e))
+            store.ensure_user(email)
+            request.session["email"] = email
+            return RedirectResponse("/")
+
+        @app.get("/auth/logout")
+        async def auth_logout(request: Request):
+            request.session.clear()
+            return RedirectResponse("/")
 
     @app.get("/health")
     async def health(_=Depends(verify_request)):

@@ -84,3 +84,44 @@ def test_role_filtering_through_api(tmp_path):
     doc_id = next(d["id"] for d in c.get("/documents", headers=boss).json() if d["path"] == "mgr/comp.md")
     assert c.get(f"/documents/{doc_id}", headers=dev).status_code == 404
     assert c.get(f"/documents/{doc_id}", headers=boss).status_code == 200
+
+
+def _fake_exchange():
+    claims = {"iss": "https://accounts.google.com", "aud": "cid",
+              "exp": int(time.time()) + 600, "email": "u@x.com", "email_verified": True}
+
+    def exchange(code, settings):
+        assert code == "authcode"
+        return {"id_token": jwt.encode(claims, "test-secret-key-32-bytes-long!!", algorithm="HS256")}
+    return exchange
+
+
+def _oidc_app(tmp_path):
+    s = _settings(tmp_path, auth_mode="oidc", secret_key="s3cret",
+                  oidc_client_id="cid", oidc_client_secret="cs")
+    return build_app(s, code_exchanger=_fake_exchange())
+
+
+def test_oidc_full_flow_sets_session(tmp_path):
+    c = TestClient(_oidc_app(tmp_path), follow_redirects=False)
+    assert c.get("/documents").status_code == 401
+    r = c.get("/auth/login")
+    assert r.status_code == 307 and "accounts.google.com" in r.headers["location"]
+    from urllib.parse import parse_qs, urlparse
+    state = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+    r = c.get(f"/auth/callback?code=authcode&state={state}")
+    assert r.status_code == 307 and r.headers["location"] == "/"
+    assert c.get("/me").json()["email"] == "u@x.com"
+    c.get("/auth/logout")
+    assert c.get("/documents").status_code == 401
+
+
+def test_oidc_state_mismatch_rejected(tmp_path):
+    c = TestClient(_oidc_app(tmp_path), follow_redirects=False)
+    c.get("/auth/login")
+    assert c.get("/auth/callback?code=authcode&state=forged").status_code == 400
+
+
+def test_oidc_requires_secret_key(tmp_path):
+    with pytest.raises(ValueError):
+        build_app(_settings(tmp_path, auth_mode="oidc", oidc_client_id="cid"))
