@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import logging
 import re
@@ -16,9 +17,10 @@ from pydantic import BaseModel
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from pydantic_ai.usage import UsageLimits
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from .agent import HubDeps, build_agent
+from .mcp_server import _mcp_role, build_mcp_server
 from .auth import AuthError, AuthenticatedUser, IapVerifier, check_domain, validate_google_id_token
 from .config import Settings
 from .db import connect
@@ -39,6 +41,39 @@ def _safe_filename(name: str) -> str:
     base = Path(name).name  # strip any path components
     cleaned = _SAFE_NAME.sub("_", base).strip("._") or "upload"
     return cleaned
+
+
+class _McpBearerAuth:
+    """Pure-ASGI gate for the mounted /mcp app: require a valid Hippo bearer token,
+    resolve it to a role, and expose that role to the MCP tools via _mcp_role.
+    Pure ASGI (not BaseHTTPMiddleware) so the contextvar propagates into the tool
+    task and unauthenticated requests are rejected before MCP processing."""
+
+    def __init__(self, app, store, settings):
+        self.app = app
+        self.store = store
+        self.settings = settings
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get("headers") or [])
+        authz = headers.get(b"authorization", b"").decode("latin-1")
+        role = None
+        if authz.lower().startswith("bearer "):
+            email = self.store.resolve_token(authz[7:].strip())
+            if email:
+                role = self.store.ensure_user(email)
+                if email in self.settings.admin_email_list:
+                    role = "admin"
+        if role is None:
+            return await JSONResponse(
+                {"detail": "invalid or missing token"}, status_code=401)(scope, receive, send)
+        tok = _mcp_role.set(role)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _mcp_role.reset(tok)
 
 
 class SourceIn(BaseModel):
@@ -89,7 +124,15 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     github_factory = github_factory or (
         lambda repo: GitHubContentsClient(repo, settings.github_token, settings.github_branch))
 
-    app = FastAPI(title="Hippo")
+    mcp_server_obj = build_mcp_server(store, require_auth=True) if settings.mcp_enabled else None
+    lifespan = None
+    if mcp_server_obj is not None:
+        @contextlib.asynccontextmanager
+        async def lifespan(_app):  # runs the MCP streamable-http session manager
+            async with mcp_server_obj.session_manager.run():
+                yield
+
+    app = FastAPI(title="Hippo", lifespan=lifespan)
     app.state.store = store
     # No CORS middleware: the React UI reaches the API same-origin through the Vite
     # dev-server proxy (dev) or is served by the same origin (prod), so cross-origin
@@ -299,6 +342,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=404, detail="source not found")
         return {"deleted": source_id}
 
+    if mcp_server_obj is not None:
+        app.mount("/mcp", _McpBearerAuth(mcp_server_obj.streamable_http_app(), store, settings))
+
     # Serve the built React UI (single-origin with the API) when configured.
     # API routes above take precedence; the catch-all only handles unmatched
     # (SPA) paths. The Vite dev server + proxy remains the dev workflow.
@@ -311,7 +357,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             index = dist / "index.html"
 
             RESERVED = ("auth", "chat", "ingest", "documents", "sources", "me",
-                        "health", "openapi.json", "docs", "redoc", "assets")
+                        "health", "openapi.json", "docs", "redoc", "assets", "mcp")
 
             @app.get("/{full_path:path}")
             async def spa(full_path: str):

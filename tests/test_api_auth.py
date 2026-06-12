@@ -387,3 +387,34 @@ def test_ingest_docx_via_api_fallback(tmp_path):
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "added" and body["versioned"] is False
+
+
+def test_mcp_requires_token(tmp_path):
+    app = build_app(_settings(tmp_path))  # mcp_enabled defaults True; none-mode
+    with TestClient(app) as c:
+        # no Authorization header -> 401 before MCP processing
+        assert c.post("/mcp", json={"jsonrpc": "2.0", "method": "ping", "id": 1}).status_code == 401
+        assert c.post("/mcp", headers={"Authorization": "Bearer hk_bogus"},
+                      json={"jsonrpc": "2.0", "method": "ping", "id": 1}).status_code == 401
+
+
+def test_mcp_valid_token_passes_auth(tmp_path):
+    app = build_app(_settings(tmp_path))
+    store = app.state.store
+    token = store.create_token("dev@x.com")
+    with TestClient(app) as c:
+        r = c.post("/mcp", headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }, json={"jsonrpc": "2.0", "method": "initialize", "id": 1,
+                 "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                            "clientInfo": {"name": "t", "version": "1"}}})
+        # auth passed -> MCP handled it (NOT 401). Accept any non-401 (200/4xx from MCP).
+        assert r.status_code != 401
+
+
+def test_mcp_disabled_not_mounted(tmp_path):
+    app = build_app(_settings(tmp_path, mcp_enabled=False))
+    with TestClient(app) as c:
+        assert c.post("/mcp", json={}).status_code == 404
