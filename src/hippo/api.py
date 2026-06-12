@@ -76,6 +76,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     ingestor = Ingestor(
         store, max_chars=settings.chunk_max_chars,
         overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+        max_doc_chars=settings.max_doc_chars,
     )
     agent = build_agent(model_override or settings.chat_model)
 
@@ -203,6 +204,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     async def ingest(file: UploadFile, repo: str = Form("team"),
                      user: AuthenticatedUser = Depends(verify_request)):
         raw_bytes = await file.read()
+        if len(raw_bytes) > settings.max_upload_bytes:
+            raise HTTPException(status_code=413, detail="file too large")
         name = _safe_filename(file.filename or "upload.md")
         if repo == "managers" and user.role not in ("manager", "admin"):
             raise HTTPException(status_code=403, detail="managers repo requires the manager role")

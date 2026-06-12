@@ -19,6 +19,7 @@ def _store(settings: Settings) -> tuple[Storage, Ingestor]:
     ing = Ingestor(
         store, max_chars=settings.chunk_max_chars,
         overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+        max_doc_chars=settings.max_doc_chars,
     )
     return store, ing
 

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     enrich_model: str = "openai:gpt-5-mini"
     chunk_max_chars: int = 3000  # ~750 tokens
     chunk_overlap_chars: int = 200
+    max_upload_bytes: int = 10_485_760  # 10 MiB — reject larger uploads pre-decode
+    max_doc_chars: int = 1_000_000      # skip docs whose parsed text exceeds this (pre-embed)
     max_tool_calls: int = 15
     search_top_k: int = 8
 

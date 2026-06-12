@@ -47,11 +47,13 @@ class SyncReport:
 class Ingestor:
     """The one pipeline: parse -> hash/dedupe -> chunk -> (enrich) -> embed+index."""
 
-    def __init__(self, store: Storage, *, max_chars: int, overlap_chars: int, enricher=None):
+    def __init__(self, store: Storage, *, max_chars: int, overlap_chars: int,
+                 enricher=None, max_doc_chars: int | None = None):
         self.store = store
         self.max_chars = max_chars
         self.overlap_chars = overlap_chars
         self.enricher = enricher  # Task 9; None = enrichment off
+        self.max_doc_chars = max_doc_chars
 
     def ingest_file(self, path: Path, *, source_type: str, source_id: int | None = None) -> IngestResult:
         try:
@@ -77,6 +79,9 @@ class Ingestor:
     def _index(self, path: str, title: str, md: str, *, source_type: str, source_id: int | None) -> IngestResult:
         if not md.strip():
             return IngestResult(path=path, status="skipped")  # no ghost documents
+        if self.max_doc_chars and len(md) > self.max_doc_chars:
+            return IngestResult(path=path, status="skipped",
+                                error=f"document exceeds max_doc_chars ({self.max_doc_chars})")
         content_hash = hashlib.sha256(md.encode()).hexdigest()
         existed = self.store.document_exists(path)  # via Storage; no SQL outside storage.py
         if self.store.is_unchanged(path, content_hash):
@@ -112,10 +117,12 @@ def _ignored(path: Path) -> bool:
 
 
 def sync_folder(folder: Path, store: Storage, *, max_chars: int, overlap_chars: int,
-                enricher=None, access: str | None = None) -> SyncReport:
+                enricher=None, access: str | None = None,
+                max_doc_chars: int | None = None) -> SyncReport:
     """Sync one folder: ingest new/changed, remove vanished. Per-file isolation."""
     source_id = store.register_source("folder", str(folder), access=access)
-    ing = Ingestor(store, max_chars=max_chars, overlap_chars=overlap_chars, enricher=enricher)
+    ing = Ingestor(store, max_chars=max_chars, overlap_chars=overlap_chars,
+                   enricher=enricher, max_doc_chars=max_doc_chars)
     report = SyncReport()
     seen: set[str] = set()
     for path in sorted(folder.rglob("*")):

@@ -307,3 +307,10 @@ def test_safe_filename_helper():
     assert _safe_filename("a b?c#d.md") == "a_b_c_d.md"
     assert _safe_filename("???") == "upload"
     assert _safe_filename("notes.md") == "notes.md"
+
+
+def test_ingest_rejects_oversized_upload(tmp_path):
+    app = build_app(_settings(tmp_path, max_upload_bytes=20))
+    c = TestClient(app)
+    r = c.post("/ingest", files={"file": ("big.md", b"x" * 500)})
+    assert r.status_code == 413
