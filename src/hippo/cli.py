@@ -145,6 +145,20 @@ def reindex():
 
 
 @app.command()
+def mcp():
+    """Run an MCP server over stdio (local single-user; runs as admin).
+
+    For remote/multi-user use, run `hippo serve` and connect to /mcp with a
+    bearer token (`hippo token create <email>`)."""
+    from .mcp_server import _mcp_role, build_mcp_server
+
+    settings = Settings()
+    store, _ = _store(settings)
+    _mcp_role.set("admin")  # local owner
+    build_mcp_server(store, require_auth=False).run(transport="stdio")
+
+
+@app.command()
 def serve(host: str = "127.0.0.1", port: int = 8000):
     """Run the API server."""
     import logging

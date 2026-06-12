@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     github_managers_repo: str = ""
     github_branch: str = "main"
     ui_dist: str = ""  # path to built UI (ui/dist); empty = don't serve static UI
+    mcp_enabled: bool = True  # mount the /mcp MCP server
 
     @property
     def admin_email_list(self) -> set[str]:
