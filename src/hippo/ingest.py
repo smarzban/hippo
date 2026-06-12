@@ -51,12 +51,14 @@ class Ingestor:
     """The one pipeline: parse -> hash/dedupe -> chunk -> (enrich) -> embed+index."""
 
     def __init__(self, store: Storage, *, max_chars: int, overlap_chars: int,
-                 enricher=None, max_doc_chars: int | None = None):
+                 enricher=None, max_doc_chars: int | None = None,
+                 max_decompressed_bytes: int | None = None):
         self.store = store
         self.max_chars = max_chars
         self.overlap_chars = overlap_chars
         self.enricher = enricher  # Task 9; None = enrichment off
         self.max_doc_chars = max_doc_chars
+        self.max_decompressed_bytes = max_decompressed_bytes
 
     def ingest_file(self, path: Path, *, source_type: str, source_id: int | None = None) -> IngestResult:
         try:
@@ -71,7 +73,8 @@ class Ingestor:
         try:
             if suffix.lower() not in SUPPORTED:
                 raise ValueError(f"unsupported file type: {suffix}")
-            title, md = parse_bytes(name, data, suffix)
+            title, md = parse_bytes(name, data, suffix,
+                                    max_decompressed=self.max_decompressed_bytes)
             # Uploads have no stable source path: content-hash-qualify so two
             # different files sharing a name coexist (mirrors the folder path).
             digest = hashlib.sha256(md.encode()).hexdigest()[:8]
