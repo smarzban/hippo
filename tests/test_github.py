@@ -45,3 +45,31 @@ def test_put_file_error_raises():
 
     with pytest.raises(GitHubError):
         _client(handler).put_file("a.md", b"x", "m")
+
+
+def test_put_file_retries_once_on_409_race():
+    calls = {"get": 0, "put": 0}
+
+    def handler(request):
+        if request.method == "GET":
+            calls["get"] += 1
+            # first GET: file absent; second GET (after 409): now exists
+            return httpx.Response(404) if calls["get"] == 1 else httpx.Response(200, json={"sha": "racer"})
+        calls["put"] += 1
+        if calls["put"] == 1:
+            return httpx.Response(409, text="conflict")  # lost the race
+        assert json.loads(request.content)["sha"] == "racer"
+        return httpx.Response(200, json={"commit": {"sha": "final"}})
+
+    assert _client(handler).put_file("a.md", b"x", "m") == "final"
+    assert calls == {"get": 2, "put": 2}
+
+
+def test_put_file_409_twice_raises():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(404)
+        return httpx.Response(409, text="conflict")
+
+    with pytest.raises(GitHubError):
+        _client(handler).put_file("a.md", b"x", "m")

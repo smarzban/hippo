@@ -206,13 +206,13 @@ def test_ingest_commits_to_repo_when_configured(tmp_path):
     c = TestClient(app)
     r = c.post("/ingest", files={"file": ("n.md", b"# N\n\nbody")}, headers=dev)
     assert r.status_code == 200 and r.json()["status"] == "committed"
-    assert fakes["org/docs"].calls[0][0] == "uploads/n.md"
+    assert fakes["org/docs"].calls[0][0] == "uploads/8d360d6a-n.md"
     assert "dev@x.com" in fakes["org/docs"].calls[0][2]
     # managers repo: developers refused, managers/admins allowed
     r = c.post("/ingest", files={"file": ("m.md", b"# M")}, data={"repo": "managers"}, headers=dev)
     assert r.status_code == 403
     r = c.post("/ingest", files={"file": ("m.md", b"# M")}, data={"repo": "managers"}, headers=boss)
-    assert r.status_code == 200 and fakes["org/mgr"].calls[0][0] == "uploads/m.md"
+    assert r.status_code == 200 and fakes["org/mgr"].calls[0][0] == "uploads/29220162-m.md"
 
 
 def test_ingest_falls_back_to_unversioned_without_github(tmp_path):
@@ -233,6 +233,32 @@ def test_ingest_managers_repo_unconfigured_400(tmp_path):
 def test_iap_mode_requires_audience(tmp_path):
     with pytest.raises(ValueError):
         build_app(_settings(tmp_path, auth_mode="iap"))
+
+
+def test_ingest_commit_path_is_content_hash_qualified(tmp_path):
+    import hashlib
+    fakes = {}
+
+    def factory(repo):
+        fakes.setdefault(repo, _FakeGH())
+        return fakes[repo]
+
+    s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD,
+                  github_token="t", github_docs_repo="org/docs")
+    app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}),
+                    github_factory=factory)
+    store = app.state.store
+    dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
+    c = TestClient(app)
+    r1 = c.post("/ingest", files={"file": ("notes.md", b"first doc")}, headers=dev)
+    r2 = c.post("/ingest", files={"file": ("notes.md", b"different doc")}, headers=dev)
+    p1, p2 = r1.json()["path"], r2.json()["path"]
+    assert p1 != p2  # distinct contents must not overwrite each other
+    h1 = hashlib.sha256(b"first doc").hexdigest()[:8]
+    assert p1 == f"uploads/{h1}-notes.md"
+    # identical re-upload converges on the same path (same content, same commit target)
+    r3 = c.post("/ingest", files={"file": ("notes.md", b"first doc")}, headers=dev)
+    assert r3.json()["path"] == p1
 
 
 def test_sources_listing_hides_manager_sources_from_developers(tmp_path):

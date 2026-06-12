@@ -1,3 +1,4 @@
+import hashlib
 import secrets
 from pathlib import Path
 from typing import Literal
@@ -193,14 +194,19 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         target = settings.github_managers_repo if repo == "managers" else settings.github_docs_repo
         if settings.github_token and target:
             gh = github_factory(target)
+            # Content-hash-qualified path: mirrors ingest.py's L4 fix so two different
+            # docs sharing a filename coexist instead of silently overwriting; an
+            # identical re-upload converges on the same path (idempotent update).
+            digest = hashlib.sha256(raw_bytes).hexdigest()[:8]
+            repo_path = f"uploads/{digest}-{name}"
             try:
                 sha = await run_in_threadpool(
-                    gh.put_file, f"uploads/{name}", raw_bytes,
+                    gh.put_file, repo_path, raw_bytes,
                     f"hippo upload: {name} (by {user.email})")
             except GitHubError as e:
                 raise HTTPException(status_code=502, detail=str(e))
             # The doc is now versioned in git; the next repo sync ingests it (spec §1).
-            return {"status": "committed", "repo": target, "path": f"uploads/{name}", "commit": sha}
+            return {"status": "committed", "repo": target, "path": repo_path, "commit": sha}
         if repo == "managers":
             raise HTTPException(status_code=400, detail="managers repo is not configured")
         # No GitHub configured (personal mode): direct, unversioned ingestion.
