@@ -172,3 +172,53 @@ def test_delete_source_admin_only(tmp_path):
     assert c.delete(f"/sources/{sid}", headers=boss).status_code == 200
     assert c.get("/sources", headers=boss).json() == []
     assert c.delete(f"/sources/{sid}", headers=boss).status_code == 404
+
+
+class _FakeGH:
+    def __init__(self):
+        self.calls = []
+
+    def put_file(self, path, content, message):
+        self.calls.append((path, content, message))
+        return "sha1"
+
+
+def test_ingest_commits_to_repo_when_configured(tmp_path):
+    fakes = {}
+
+    def factory(repo):
+        fakes[repo] = _FakeGH()
+        return fakes[repo]
+
+    s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD, admin_emails="boss@x.com",
+                  github_token="t", github_docs_repo="org/docs", github_managers_repo="org/mgr")
+    app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}),
+                    github_factory=factory)
+    store = app.state.store
+    dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
+    boss = {"Authorization": f"Bearer {store.create_token('boss@x.com')}"}
+    c = TestClient(app)
+    r = c.post("/ingest", files={"file": ("n.md", b"# N\n\nbody")}, headers=dev)
+    assert r.status_code == 200 and r.json()["status"] == "committed"
+    assert fakes["org/docs"].calls[0][0] == "uploads/n.md"
+    assert "dev@x.com" in fakes["org/docs"].calls[0][2]
+    # managers repo: developers refused, managers/admins allowed
+    r = c.post("/ingest", files={"file": ("m.md", b"# M")}, data={"repo": "managers"}, headers=dev)
+    assert r.status_code == 403
+    r = c.post("/ingest", files={"file": ("m.md", b"# M")}, data={"repo": "managers"}, headers=boss)
+    assert r.status_code == 200 and fakes["org/mgr"].calls[0][0] == "uploads/m.md"
+
+
+def test_ingest_falls_back_to_unversioned_without_github(tmp_path):
+    app = build_app(_settings(tmp_path))  # none mode, no github config
+    c = TestClient(app)
+    r = c.post("/ingest", files={"file": ("n.md", b"# N\n\nbody")})
+    assert r.status_code == 200
+    assert r.json()["status"] == "added" and r.json()["versioned"] is False
+
+
+def test_ingest_managers_repo_unconfigured_400(tmp_path):
+    app, store, dev, boss = _iap_app_with_tokens(tmp_path)  # no github settings at all
+    c = TestClient(app)
+    r = c.post("/ingest", files={"file": ("m.md", b"# M")}, data={"repo": "managers"}, headers=boss)
+    assert r.status_code == 400

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
@@ -17,6 +17,7 @@ from .config import Settings
 from .db import connect
 from .embeddings import build_embedder
 from .enrich import Enricher
+from .github import GitHubContentsClient, GitHubError
 from .ingest import Ingestor, sync_folder
 from .storage import Storage
 
@@ -62,6 +63,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
     )
     agent = build_agent(model_override or settings.chat_model)
+
+    github_factory = github_factory or (
+        lambda repo: GitHubContentsClient(repo, settings.github_token, settings.github_branch))
 
     app = FastAPI(title="Hippo")
     app.state.store = store
@@ -174,17 +178,35 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         )
 
     @app.post("/ingest")
-    async def ingest(file: UploadFile, _=Depends(verify_request)):
-        raw = (await file.read()).decode("utf-8", errors="replace")
-        suffix = Path(file.filename or "upload.md").suffix or ".md"
+    async def ingest(file: UploadFile, repo: str = Form("team"),
+                     user: AuthenticatedUser = Depends(verify_request)):
+        raw_bytes = await file.read()
+        name = Path(file.filename or "upload.md").name  # basename only: no path tricks
+        if repo == "managers" and user.role not in ("manager", "admin"):
+            raise HTTPException(status_code=403, detail="managers repo requires the manager role")
+        target = settings.github_managers_repo if repo == "managers" else settings.github_docs_repo
+        if settings.github_token and target:
+            gh = github_factory(target)
+            try:
+                sha = await run_in_threadpool(
+                    gh.put_file, f"uploads/{name}", raw_bytes,
+                    f"hippo upload: {name} (by {user.email})")
+            except GitHubError as e:
+                raise HTTPException(status_code=502, detail=str(e))
+            # The doc is now versioned in git; the next repo sync ingests it (spec §1).
+            return {"status": "committed", "repo": target, "path": f"uploads/{name}", "commit": sha}
+        if repo == "managers":
+            raise HTTPException(status_code=400, detail="managers repo is not configured")
+        # No GitHub configured (personal mode): direct, unversioned ingestion.
         # Threadpool: ingestion blocks (embeddings + enrichment), and Enricher's
         # run_sync cannot run on the event loop thread.
-        result = await run_in_threadpool(
-            ingestor.ingest_text, file.filename or "upload.md", raw, suffix=suffix
-        )
+        raw = raw_bytes.decode("utf-8", errors="replace")
+        suffix = Path(name).suffix or ".md"
+        result = await run_in_threadpool(ingestor.ingest_text, name, raw, suffix=suffix)
         if result.status == "failed":
             raise HTTPException(status_code=422, detail=result.error)
-        return {"path": result.path, "status": result.status, "chunks": result.chunks}
+        return {"path": result.path, "status": result.status,
+                "chunks": result.chunks, "versioned": False}
 
     @app.get("/documents")
     async def documents(query: str | None = None, user: AuthenticatedUser = Depends(verify_request)):
