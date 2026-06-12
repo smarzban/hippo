@@ -282,7 +282,31 @@ class Storage:
             row = self.con.execute(
                 "SELECT email FROM tokens WHERE token_hash=?", (digest,)
             ).fetchone()
+            if row:
+                with self.con:
+                    self.con.execute(
+                        "UPDATE tokens SET last_used_at=datetime('now') WHERE token_hash=?",
+                        (digest,),
+                    )
         return row[0] if row else None
+
+    def list_tokens(self, email: str) -> list[tuple[int, str, str, str | None]]:
+        """Return (id, name, created_at, last_used_at) for all tokens belonging to email."""
+        email = _norm_email(email)
+        with self._lock:
+            return list(self.con.execute(
+                "SELECT id, name, created_at, last_used_at FROM tokens WHERE email=? ORDER BY id",
+                (email,),
+            ))
+
+    def revoke_token(self, token_id: int, email: str) -> bool:
+        """Delete the token matching both id and email. Returns True if a row was deleted."""
+        email = _norm_email(email)
+        with self._lock, self.con:
+            cur = self.con.execute(
+                "DELETE FROM tokens WHERE id=? AND email=?", (token_id, email)
+            )
+        return cur.rowcount > 0
 
     # -- search --------------------------------------------------------------
 

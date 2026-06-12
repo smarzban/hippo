@@ -57,6 +57,29 @@ def token_create(email: str, name: str = typer.Option("", help="label, e.g. 'cla
     typer.echo("save it now — it cannot be shown again", err=True)
 
 
+@token_app.command("list")
+def token_list(email: str):
+    """List a user's tokens (id, name, created, last used) — never the secret."""
+    store, _ = _store(Settings())
+    rows = store.list_tokens(email)
+    if not rows:
+        typer.echo("no tokens")
+        return
+    for tid, name, created, last in rows:
+        typer.echo(f"#{tid}  {name or '(unnamed)':20}  created {created}  last used {last or 'never'}")
+
+
+@token_app.command("revoke")
+def token_revoke(email: str, token_id: int):
+    """Revoke (delete) one of a user's tokens by id."""
+    store, _ = _store(Settings())
+    if store.revoke_token(token_id, email):
+        typer.echo(f"revoked token #{token_id} for {email}")
+    else:
+        typer.echo(f"no token #{token_id} for {email}", err=True)
+        raise typer.Exit(1)
+
+
 @app.command()
 def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "--watch")):
     """Sync a folder (and register it), or re-sync all registered sources."""

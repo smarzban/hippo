@@ -58,3 +58,15 @@ def test_role_set_and_list(tmp_path):
 def test_token_create_prints_token(tmp_path):
     r = runner.invoke(app, ["token", "create", "a@x.com", "--name", "laptop"], env=_env(tmp_path))
     assert r.exit_code == 0 and "hk_" in r.output
+
+
+def test_token_list_and_revoke(tmp_path):
+    env = _env(tmp_path)
+    create = runner.invoke(app, ["token", "create", "a@x.com"], env=env)
+    token = [ln for ln in create.output.splitlines() if ln.startswith("hk_")][0]
+    r = runner.invoke(app, ["token", "list", "a@x.com"], env=env)
+    assert "#1" in r.output
+    r = runner.invoke(app, ["token", "revoke", "a@x.com", "1"], env=env)
+    assert r.exit_code == 0 and "revoked" in r.output
+    r = runner.invoke(app, ["token", "revoke", "a@x.com", "1"], env=env)
+    assert r.exit_code != 0  # already revoked

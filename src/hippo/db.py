@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS tokens (
     token_hash TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL REFERENCES users(email) ON DELETE CASCADE,
     name TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
 );
 """
 
@@ -80,6 +81,10 @@ def connect(db_path: Path | str, embedding_dim: int) -> sqlite3.Connection:
     cols = {r[1] for r in con.execute("PRAGMA table_info(sources)")}
     if "access" not in cols:
         con.execute("ALTER TABLE sources ADD COLUMN access TEXT NOT NULL DEFAULT 'everyone'")
+    # migration: add last_used_at to tokens for revocation tracking
+    token_cols = {r[1] for r in con.execute("PRAGMA table_info(tokens)")}
+    if "last_used_at" not in token_cols:
+        con.execute("ALTER TABLE tokens ADD COLUMN last_used_at TEXT")
     con.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vec USING vec0(embedding float[{int(embedding_dim)}])"
     )
