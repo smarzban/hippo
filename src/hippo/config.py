@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     github_docs_repo: str = ""  # e.g. superbalist/hippo-docs
     github_managers_repo: str = ""
     github_branch: str = "main"
+    ui_dist: str = ""  # path to built UI (ui/dist); empty = don't serve static UI
 
     @property
     def admin_email_list(self) -> set[str]:

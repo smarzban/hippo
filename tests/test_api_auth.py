@@ -314,3 +314,31 @@ def test_ingest_rejects_oversized_upload(tmp_path):
     c = TestClient(app)
     r = c.post("/ingest", files={"file": ("big.md", b"x" * 500)})
     assert r.status_code == 413
+
+
+def test_serves_built_ui_when_configured(tmp_path):
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>Hippo</title>")
+    (dist / "assets" / "app.js").write_text("console.log('hi')")
+    app = build_app(_settings(tmp_path, ui_dist=str(dist)))
+    c = TestClient(app)
+    # SPA root serves index.html
+    r = c.get("/")
+    assert r.status_code == 200 and "Hippo" in r.text
+    # an unknown client-side route also gets index.html (SPA fallback)
+    r = c.get("/some/client/route")
+    assert r.status_code == 200 and "<title>Hippo</title>" in r.text
+    # static asset served
+    r = c.get("/assets/app.js")
+    assert r.status_code == 200 and "console.log" in r.text
+    # API routes still win and stay JSON
+    assert c.get("/health").json() == {"status": "ok"}
+
+
+def test_no_static_ui_when_unset(tmp_path):
+    app = build_app(_settings(tmp_path))  # ui_dist default ""
+    c = TestClient(app)
+    # with no UI configured, an unknown path is a normal 404 (no catch-all)
+    assert c.get("/some/client/route").status_code == 404
+    assert c.get("/health").json() == {"status": "ok"}

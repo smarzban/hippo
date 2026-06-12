@@ -7,6 +7,8 @@ from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from pydantic_ai.usage import UsageLimits
@@ -282,5 +284,20 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if not store.delete_source(source_id):
             raise HTTPException(status_code=404, detail="source not found")
         return {"deleted": source_id}
+
+    # Serve the built React UI (single-origin with the API) when configured.
+    # API routes above take precedence; the catch-all only handles unmatched
+    # (SPA) paths. The Vite dev server + proxy remains the dev workflow.
+    if settings.ui_dist:
+        dist = Path(settings.ui_dist)
+        if dist.is_dir():
+            assets = dist / "assets"
+            if assets.is_dir():
+                app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
+            index = dist / "index.html"
+
+            @app.get("/{full_path:path}")
+            async def spa(full_path: str):
+                return FileResponse(str(index))
 
     return app
