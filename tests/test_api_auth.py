@@ -336,6 +336,41 @@ def test_serves_built_ui_when_configured(tmp_path):
     assert c.get("/health").json() == {"status": "ok"}
 
 
+def test_ingest_github_path_rejects_overlong_doc(tmp_path):
+    fakes = {}
+
+    def factory(repo):
+        fakes.setdefault(repo, _FakeGH()); return fakes[repo]
+
+    s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD,
+                  github_token="t", github_docs_repo="org/docs",
+                  max_doc_chars=100, max_upload_bytes=10_000_000)
+    app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}), github_factory=factory)
+    store = app.state.store
+    dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
+    c = TestClient(app)
+    r = c.post("/ingest", files={"file": ("big.md", b"# Big\n\n" + b"x" * 500)}, headers=dev)
+    assert r.status_code == 413
+    assert "org/docs" not in fakes or not fakes["org/docs"].calls  # never committed
+
+
+def test_ingest_content_length_precheck(tmp_path):
+    app = build_app(_settings(tmp_path, max_upload_bytes=20))
+    c = TestClient(app)
+    r = c.post("/ingest", files={"file": ("a.md", b"x" * 500)})
+    assert r.status_code == 413
+
+
+def test_spa_does_not_mask_unknown_api_paths(tmp_path):
+    dist = tmp_path / "dist"; (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>Hippo</title>")
+    app = build_app(_settings(tmp_path, ui_dist=str(dist)))
+    c = TestClient(app)
+    assert c.get("/documents/nope/extra").status_code == 404  # reserved → 404, not HTML
+    assert c.get("/some/client/route").status_code == 200      # real SPA route → shell
+    assert "Hippo" in c.get("/").text
+
+
 def test_no_static_ui_when_unset(tmp_path):
     app = build_app(_settings(tmp_path))  # ui_dist default ""
     c = TestClient(app)

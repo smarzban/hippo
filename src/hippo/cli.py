@@ -97,6 +97,7 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
             report = sync_folder(
                 f, store, max_chars=settings.chunk_max_chars,
                 overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+                max_doc_chars=settings.max_doc_chars,
             )
             typer.echo(f"{f}: {report.summary()}")
 
@@ -166,9 +167,14 @@ def serve(host: str = "127.0.0.1", port: int = 8000):
 @app.command()
 def backup(dest: str):
     """Write a consistent snapshot of the database to DEST (VACUUM INTO)."""
+    import sqlite3
     settings = Settings()
     store, _ = _store(settings)
-    store.backup(dest)
+    try:
+        store.backup(dest)
+    except sqlite3.Error as e:
+        typer.echo(f"backup failed: {e} (does {dest} already exist?)", err=True)
+        raise typer.Exit(1)
     typer.echo(f"backup written to {dest}")
 
 

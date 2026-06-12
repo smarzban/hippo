@@ -68,6 +68,25 @@ def test_backup_command_writes_file(tmp_path):
     assert r.exit_code == 0 and dest.exists()
 
 
+def test_cli_sync_honors_max_doc_chars(tmp_path):
+    docs = tmp_path / "docs"; docs.mkdir()
+    (docs / "big.md").write_text("# Big\n\n" + "x" * 5000)
+    env = _env(tmp_path) | {"HIPPO_MAX_DOC_CHARS": "1000"}
+    r = runner.invoke(app, ["sync", str(docs)], env=env)
+    assert r.exit_code == 0
+    # the oversized doc must be skipped, not indexed
+    out = runner.invoke(app, ["search", "Big"], env=env)
+    assert "big.md" not in out.output
+
+
+def test_backup_to_existing_dest_fails_cleanly(tmp_path):
+    env = _env(tmp_path)
+    runner.invoke(app, ["token", "create", "a@x.com"], env=env)  # ensure db exists
+    dest = tmp_path / "exists.db"; dest.write_text("already here")
+    r = runner.invoke(app, ["backup", str(dest)], env=env)
+    assert r.exit_code != 0 and "backup failed" in (r.output + str(r.stderr or ""))
+
+
 def test_token_list_and_revoke(tmp_path):
     env = _env(tmp_path)
     create = runner.invoke(app, ["token", "create", "a@x.com"], env=env)

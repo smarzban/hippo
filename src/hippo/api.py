@@ -211,8 +211,11 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         )
 
     @app.post("/ingest")
-    async def ingest(file: UploadFile, repo: str = Form("team"),
+    async def ingest(request: Request, file: UploadFile, repo: str = Form("team"),
                      user: AuthenticatedUser = Depends(verify_request)):
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > settings.max_upload_bytes:
+            raise HTTPException(status_code=413, detail="file too large")
         raw_bytes = await file.read()
         if len(raw_bytes) > settings.max_upload_bytes:
             raise HTTPException(status_code=413, detail="file too large")
@@ -221,6 +224,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=403, detail="managers repo requires the manager role")
         target = settings.github_managers_repo if repo == "managers" else settings.github_docs_repo
         if settings.github_token and target:
+            text = raw_bytes.decode("utf-8", errors="replace")
+            if settings.max_doc_chars and len(text) > settings.max_doc_chars:
+                raise HTTPException(status_code=413, detail="document too large")
             gh = github_factory(target)
             # Content-hash-qualified path: mirrors ingest.py's L4 fix so two different
             # docs sharing a filename coexist instead of silently overwriting; an
@@ -304,8 +310,14 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
             index = dist / "index.html"
 
+            RESERVED = ("auth", "chat", "ingest", "documents", "sources", "me",
+                        "health", "openapi.json", "docs", "redoc", "assets")
+
             @app.get("/{full_path:path}")
             async def spa(full_path: str):
+                first = full_path.split("/", 1)[0]
+                if first in RESERVED:
+                    raise HTTPException(status_code=404, detail="not found")
                 return FileResponse(str(index))
 
     return app
