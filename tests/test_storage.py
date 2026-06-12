@@ -326,6 +326,19 @@ def test_grep_normal_pattern_still_matches(store):
     assert hits and hits[0].path == "doc.md"
 
 
+def test_backup_produces_readable_snapshot(store, tmp_path):
+    from hippo.db import connect
+    from hippo.embeddings import FakeEmbedder
+    _add_doc(store, "a.md", "snapshot me please")
+    dest = tmp_path / "snap.db"
+    store.backup(dest)
+    assert dest.exists()
+    # reopen the snapshot independently and confirm the document is there
+    con2 = connect(dest, embedding_dim=32)
+    store2 = Storage(con2, FakeEmbedder(dim=32))
+    assert any(d.path == "a.md" for d in store2.list_documents(role="admin"))
+
+
 def test_token_revoke_and_list(store):
     t1 = store.create_token("a@x.com", name="laptop")
     store.create_token("a@x.com", name="ci")

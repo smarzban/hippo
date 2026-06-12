@@ -5,6 +5,7 @@ import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 import sqlite_vec
 
@@ -471,3 +472,9 @@ class Storage:
                 if len(hits) >= limit:
                     break
         return hits
+
+    def backup(self, dest: str | Path) -> None:
+        """Write a consistent single-file snapshot to dest via VACUUM INTO.
+        Works regardless of WAL state; dest must not already exist."""
+        with self._lock:
+            self.con.execute("VACUUM INTO ?", (str(dest),))

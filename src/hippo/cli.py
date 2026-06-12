@@ -161,6 +161,15 @@ def serve(host: str = "127.0.0.1", port: int = 8000):
 
 
 @app.command()
+def backup(dest: str):
+    """Write a consistent snapshot of the database to DEST (VACUUM INTO)."""
+    settings = Settings()
+    store, _ = _store(settings)
+    store.backup(dest)
+    typer.echo(f"backup written to {dest}")
+
+
+@app.command()
 def eval(golden_file: str, top_k: int = 5):
     """Retrieval-quality eval: % of golden questions whose expected doc is in top-k."""
     import yaml

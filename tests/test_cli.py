@@ -60,6 +60,14 @@ def test_token_create_prints_token(tmp_path):
     assert r.exit_code == 0 and "hk_" in r.output
 
 
+def test_backup_command_writes_file(tmp_path):
+    env = _env(tmp_path)
+    runner.invoke(app, ["token", "create", "a@x.com"], env=env)  # touch the db so it exists
+    dest = tmp_path / "out.db"
+    r = runner.invoke(app, ["backup", str(dest)], env=env)
+    assert r.exit_code == 0 and dest.exists()
+
+
 def test_token_list_and_revoke(tmp_path):
     env = _env(tmp_path)
     create = runner.invoke(app, ["token", "create", "a@x.com"], env=env)
