@@ -25,35 +25,35 @@ def store(tmp_path):
 
 
 def test_keyword_match_wins_on_exact_terms(store):
-    hits = store.search_hybrid("telegram webhook", top_k=3)
+    hits = store.search_hybrid("telegram webhook", top_k=3, role="admin")
     assert hits[0].path == "polly/telegram.md"
     assert hits[0].heading_path == "Polly Telegram"
 
 
 def test_semantic_side_contributes(store):
     # FakeEmbedder is token-overlap based; shared tokens rank the right doc up
-    hits = store.search_hybrid("budget planning", top_k=3)
+    hits = store.search_hybrid("budget planning", top_k=3, role="admin")
     assert hits[0].path == "infra/budget.md"
 
 
 def test_fts_query_with_special_chars_does_not_crash(store):
-    hits = store.search_hybrid('why "polly" (telegram)? -slack', top_k=3)
+    hits = store.search_hybrid('why "polly" (telegram)? -slack', top_k=3, role="admin")
     assert isinstance(hits, list)
 
 
 def test_grep(store):
-    hits = store.grep(r"webhook", limit=10)
+    hits = store.grep(r"webhook", limit=10, role="admin")
     assert len(hits) == 1
     assert hits[0].path == "polly/telegram.md"
-    assert store.grep(r"nonexistentzzz") == []
+    assert store.grep(r"nonexistentzzz", role="admin") == []
 
 
 def test_grep_invalid_regex_raises_value_error(store):
     import pytest as _pytest
 
     with _pytest.raises(ValueError, match="invalid regex"):
-        store.grep("[")
+        store.grep("[", role="admin")
 
 
 def test_empty_query_returns_nothing(store):
-    assert store.search_hybrid("   ", top_k=3) == []
+    assert store.search_hybrid("   ", top_k=3, role="admin") == []
