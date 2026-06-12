@@ -256,3 +256,33 @@ def test_list_sources_role_filtered(store):
     store.register_source("folder", "/r/mgr", access="managers")
     assert {loc for _, _, loc, _ in store.list_sources(role="developer")} == {"/r/team"}
     assert {loc for _, _, loc, _ in store.list_sources(role="manager")} == {"/r/team", "/r/mgr"}
+
+
+def test_search_not_starved_by_higher_ranked_manager_chunks(store):
+    """Codex review: candidate pools must be role-filtered, or manager docs
+    crowd developer-visible docs out of the top_k*3 pool entirely."""
+    team = store.register_source("folder", "/r/team")
+    mgr = store.register_source("folder", "/r/mgr", access="managers")
+    _add_doc(store, "team/a.md", "zebra appears once here", source_id=team)
+    for i in range(30):  # dominate BM25 with high-tf manager chunks
+        _add_doc(store, f"mgr/{i}.md", "zebra " * 40, source_id=mgr)
+    dev_hits = store.search_hybrid("zebra", top_k=5, role="developer")
+    assert any(h.path == "team/a.md" for h in dev_hits)
+    assert all(not h.path.startswith("mgr/") for h in dev_hits)
+
+
+def test_fts_candidates_are_role_filtered(store):
+    team = store.register_source("folder", "/r/team")
+    mgr = store.register_source("folder", "/r/mgr", access="managers")
+    _add_doc(store, "team/a.md", "zebra appears once here", source_id=team)
+    for i in range(30):
+        _add_doc(store, f"mgr/{i}.md", "zebra " * 40, source_id=mgr)
+    with store._lock:
+        ids = store._search_fts("zebra", limit=10, role="developer")
+        mgr_ids = store._search_fts("zebra", limit=10, role="manager")
+    team_doc_ids = {d.id for d in store.list_documents(role="developer")}
+    # developer candidates contain ONLY developer-visible chunks
+    rows = {r[0] for r in store.con.execute(
+        "SELECT document_id FROM chunks WHERE id IN (%s)" % ",".join(map(str, ids)))}
+    assert rows <= team_doc_ids
+    assert len(mgr_ids) == 10

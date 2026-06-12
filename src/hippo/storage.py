@@ -287,14 +287,15 @@ class Storage:
             return []
         qvec = self.embedder.embed([query])[0]  # network: outside the lock
         with self._lock:
-            fts_ranked = self._search_fts(query, limit=top_k * 3)
-            vec_ranked = self._search_vec(qvec, limit=top_k * 3)
+            fts_ranked = self._search_fts(query, limit=top_k * 3, role=role)
+            vec_ranked = self._search_vec(qvec, limit=top_k * 3, role=role)
             scores: dict[int, float] = {}
             for ranked in (fts_ranked, vec_ranked):
                 for rank, chunk_id in enumerate(ranked):
                     scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (self.RRF_K + rank + 1)
             hits: list[SearchHit] = []
             for cid in sorted(scores, key=scores.__getitem__, reverse=True):
+                # _hit is now redundant defense-in-depth; candidates are already role-filtered
                 hit = self._hit(cid, scores[cid], role)
                 if hit is not None:
                     hits.append(hit)
@@ -302,24 +303,53 @@ class Storage:
                     break
         return hits
 
-    def _search_fts(self, query: str, limit: int) -> list[int]:
+    def _search_fts(self, query: str, limit: int, role: str) -> list[int]:
         # quote each token so user punctuation can't break FTS query syntax
         tokens = [t for t in re.findall(r"\w+", query) if t]
         if not tokens:
             return []
         match = " OR ".join(f'"{t}"' for t in tokens)
-        rows = self.con.execute(
-            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT ?",
-            (match, limit),
-        )
+        sql = """SELECT chunks_fts.rowid FROM chunks_fts
+                 JOIN chunks c ON c.id = chunks_fts.rowid
+                 JOIN documents d ON d.id = c.document_id
+                 LEFT JOIN sources s ON s.id = d.source_id
+                 WHERE chunks_fts MATCH ?"""
+        if role not in MANAGER_ROLES:
+            sql += " AND (s.access IS NULL OR s.access != 'managers')"
+        sql += " ORDER BY bm25(chunks_fts) LIMIT ?"
+        rows = self.con.execute(sql, (match, limit))
         return [r[0] for r in rows]
 
-    def _search_vec(self, vec: list[float], limit: int) -> list[int]:
-        rows = self.con.execute(
-            "SELECT rowid FROM chunk_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-            (sqlite_vec.serialize_float32(vec), limit),
-        )
-        return [r[0] for r in rows]
+    def _search_vec(self, vec: list[float], limit: int, role: str) -> list[int]:
+        serialized = sqlite_vec.serialize_float32(vec)
+        total = self.con.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        k = limit
+        while True:
+            rows = [r[0] for r in self.con.execute(
+                "SELECT rowid FROM chunk_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+                (serialized, k),
+            )]
+            visible = self._visible_ids(rows, role)
+            # done when we have enough, the KNN returned fewer than asked (index
+            # exhausted), or we've already asked for every chunk
+            if len(visible) >= limit or len(rows) < k or k >= total:
+                return visible[:limit]
+            k = min(k * 4, total)
+
+    def _visible_ids(self, chunk_ids: list[int], role: str) -> list[int]:
+        """Filter chunk ids to those the role may see, preserving order. Also
+        drops orphan vec rowids (no chunks row) via the join."""
+        if not chunk_ids:
+            return []
+        ph = ",".join("?" * len(chunk_ids))
+        sql = f"""SELECT c.id FROM chunks c
+                  JOIN documents d ON d.id = c.document_id
+                  LEFT JOIN sources s ON s.id = d.source_id
+                  WHERE c.id IN ({ph})"""
+        if role not in MANAGER_ROLES:
+            sql += " AND (s.access IS NULL OR s.access != 'managers')"
+        vis = {r[0] for r in self.con.execute(sql, chunk_ids)}
+        return [cid for cid in chunk_ids if cid in vis]
 
     def _hit(self, chunk_id: int, score: float, role: str) -> SearchHit | None:
         row = self.con.execute(
