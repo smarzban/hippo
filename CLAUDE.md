@@ -8,6 +8,7 @@ from the indexed docs, with `[path > section]` citations. Personal-first, team-r
 - `docs/superpowers/specs/2026-06-11-knowledge-hub-design.md` — the spec (what & how)
 - `docs/superpowers/specs/2026-06-11-knowledge-hub-decisions.md` — decision log (why; 9 ADRs incl. all rejected alternatives)
 - `docs/superpowers/plans/2026-06-11-knowledge-hub.md` — the 15-task build plan (code has a few post-plan hardening fixes the plan text doesn't show)
+- `docs/superpowers/plans/2026-06-12-roadmap.md` — **current roadmap / action list** (post-v1 hardening + features; what's next and in what order)
 
 Naming: the project was "knowledgeHub" during design (docs keep that name); the product/package is **hippo** (from hippocampus).
 
@@ -65,14 +66,19 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 - `chunk_vec` dim is fixed at table creation; changing embedding dim requires `hippo reindex` (drops/recreates table).
 - TDD discipline: failing test first; commit per green step.
 
-## State (2026-06-11)
+## State (2026-06-12)
 
-v1 complete and merged to main: storage/hybrid search, ingestion (folder sync + upload), enrichment,
-agent, API, CLI, React UI, eval harness. 57/57 tests, eval 4/4 on seed fixtures, UI builds clean.
+v1 + review-hardening merged to main: storage/hybrid search, ingestion (folder sync + upload),
+enrichment, agent, API, CLI, React UI, eval harness. PR #2 landed two independent-review passes
+(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 57/57 tests,
+eval 4/4 on seed fixtures, UI builds clean.
+
+**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. This round (planning →
+implementing one after another): **auth (Google SSO) + `/sources` allowlist**, **production-readiness**
+(ingestion limits, grounding enforcement, grep timeout, chunk/drawer fixes, `hippo backup`, CI),
+**PDF/Word parsing**, **MCP server**. Then: scale (Postgres+pgvector), Slack, MCP client/connectors,
+settings UI.
 
 **Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown), Slack bot
 (consumes POST /chat), PDF/docx parsers, Postgres+pgvector migration (reimplement Storage), real auth
 (implement `verify_request` in api.py), hierarchical summaries, GraphRAG.
-
-**Next obvious steps:** replace `eval/golden.yaml` seed with ~20 real-team-doc questions; first real-corpus
-sync + eval run; Drive connector.
