@@ -49,10 +49,10 @@ class _McpBearerAuth:
     Pure ASGI (not BaseHTTPMiddleware) so the contextvar propagates into the tool
     task and unauthenticated requests are rejected before MCP processing."""
 
-    def __init__(self, app, store, settings):
+    def __init__(self, app, store, resolve):
         self.app = app
         self.store = store
-        self.settings = settings
+        self.resolve = resolve  # callable: email -> role (raises AuthError on domain failure)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -63,9 +63,10 @@ class _McpBearerAuth:
         if authz.lower().startswith("bearer "):
             email = self.store.resolve_token(authz[7:].strip())
             if email:
-                role = self.store.ensure_user(email)
-                if email in self.settings.admin_email_list:
-                    role = "admin"
+                try:
+                    role = self.resolve(email)        # shared: check_domain + role
+                except AuthError:
+                    role = None                        # out-of-domain token -> reject
         if role is None:
             return await JSONResponse(
                 {"detail": "invalid or missing token"}, status_code=401)(scope, receive, send)
@@ -145,16 +146,23 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         raise ValueError("HIPPO_IAP_AUDIENCE is required when HIPPO_AUTH_MODE=iap")
     iap = iap_verifier or (IapVerifier(settings.iap_audience) if settings.auth_mode == "iap" else None)
 
-    def _user_for(email: str) -> AuthenticatedUser:
+    def _email_to_role(email: str) -> str:
+        """Canonical domain-check + role resolution. Raises AuthError on domain failure.
+        Used by both the HTTP bearer path (_user_for) and the MCP ASGI middleware."""
         email = email.strip().lower()
-        try:
-            check_domain(email, settings.allowed_domain)
-        except AuthError as e:
-            log.warning("auth denied: domain not allowed for %s", email)
-            raise HTTPException(status_code=403, detail=str(e))
+        check_domain(email, settings.allowed_domain)  # raises AuthError
         role = store.ensure_user(email)
         if email in settings.admin_email_list:
             role = "admin"  # env bootstrap always wins (spec §1)
+        return role
+
+    def _user_for(email: str) -> AuthenticatedUser:
+        email = email.strip().lower()
+        try:
+            role = _email_to_role(email)
+        except AuthError as e:
+            log.warning("auth denied: domain not allowed for %s", email)
+            raise HTTPException(status_code=403, detail=str(e))
         return AuthenticatedUser(email=email, role=role)
 
     async def verify_request(request: Request) -> AuthenticatedUser:
@@ -343,7 +351,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         return {"deleted": source_id}
 
     if mcp_server_obj is not None:
-        app.mount("/mcp", _McpBearerAuth(mcp_server_obj.streamable_http_app(), store, settings))
+        app.mount("/mcp", _McpBearerAuth(mcp_server_obj.streamable_http_app(), store, _email_to_role))
 
     # Serve the built React UI (single-origin with the API) when configured.
     # API routes above take precedence; the catch-all only handles unmatched

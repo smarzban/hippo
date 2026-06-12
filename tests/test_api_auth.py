@@ -431,3 +431,39 @@ def test_mcp_disabled_not_mounted(tmp_path):
     app = build_app(_settings(tmp_path, mcp_enabled=False))
     with TestClient(app) as c:
         assert c.post("/mcp", json={}).status_code == 404
+
+
+def test_mcp_rejects_out_of_domain_token(tmp_path):
+    s = _settings(tmp_path, allowed_domain="x.com")
+    app = build_app(s)
+    store = app.state.store
+    good = store.create_token("dev@x.com")
+    bad = store.create_token("contractor@gmail.com")  # token exists but wrong domain
+    with TestClient(app) as c:
+        # out-of-domain token is rejected by the same gate that protects /me
+        assert c.post("/mcp/", headers={"Authorization": f"Bearer {bad}",
+            "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                             "clientInfo": {"name": "t", "version": "1"}}}).status_code == 401
+        # in-domain token still works (full handshake)
+        init = c.post("/mcp/", headers={"Authorization": f"Bearer {good}",
+            "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                             "clientInfo": {"name": "t", "version": "1"}}})
+        assert init.status_code == 200
+
+
+def test_mcp_revoked_token_rejected(tmp_path):
+    app = build_app(_settings(tmp_path))
+    store = app.state.store
+    tok = store.create_token("dev@x.com")
+    tid = store.list_tokens("dev@x.com")[0][0]
+    assert store.revoke_token(tid, "dev@x.com") is True
+    with TestClient(app) as c:
+        assert c.post("/mcp/", headers={"Authorization": f"Bearer {tok}",
+            "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                             "clientInfo": {"name": "t", "version": "1"}}}).status_code == 401
