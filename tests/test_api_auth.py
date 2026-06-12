@@ -278,3 +278,32 @@ def test_sources_listing_hides_manager_sources_from_developers(tmp_path):
     assert dev_locs == {"/r/team"}
     boss_locs = {s["location"] for s in c.get("/sources", headers=boss).json()}
     assert boss_locs == {"/r/team", "/r/mgr"}
+
+
+def test_ingest_filename_sanitized_for_github_path(tmp_path):
+    fakes = {}
+
+    def factory(repo):
+        fakes.setdefault(repo, _FakeGH())
+        return fakes[repo]
+
+    s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD,
+                  github_token="t", github_docs_repo="org/docs")
+    app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}),
+                    github_factory=factory)
+    store = app.state.store
+    dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
+    c = TestClient(app)
+    r = c.post("/ingest", files={"file": ("rep ort?ref=evil#x.md", b"data")}, headers=dev)
+    assert r.status_code == 200
+    committed_path = fakes["org/docs"].calls[0][0]
+    assert committed_path.startswith("uploads/")
+    assert all(ch not in committed_path for ch in "?# ")  # no URL-significant chars
+
+
+def test_safe_filename_helper():
+    from hippo.api import _safe_filename
+    assert _safe_filename("../../etc/passwd") == "passwd"
+    assert _safe_filename("a b?c#d.md") == "a_b_c_d.md"
+    assert _safe_filename("???") == "upload"
+    assert _safe_filename("notes.md") == "notes.md"

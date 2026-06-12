@@ -1,4 +1,5 @@
 import hashlib
+import re
 import secrets
 from pathlib import Path
 from typing import Literal
@@ -21,6 +22,18 @@ from .enrich import Enricher
 from .github import GitHubContentsClient, GitHubError
 from .ingest import Ingestor, sync_folder
 from .storage import Storage
+
+
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_filename(name: str) -> str:
+    """Reduce an upload filename to a safe, URL-clean basename. Path-stripped by
+    the caller; this removes query/fragment/space chars that would corrupt the
+    GitHub Contents API URL or the repo path."""
+    base = Path(name).name  # strip any path components
+    cleaned = _SAFE_NAME.sub("_", base).strip("._") or "upload"
+    return cleaned
 
 
 class SourceIn(BaseModel):
@@ -125,7 +138,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if not settings.secret_key:
             raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=oidc")
         app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
-                           https_only=settings.public_url.startswith("https"))
+                           https_only=settings.public_url.startswith("https"),
+                           same_site="lax")
         exchange = code_exchanger or _exchange_code_with_google
 
         @app.get("/auth/login")
@@ -189,7 +203,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     async def ingest(file: UploadFile, repo: str = Form("team"),
                      user: AuthenticatedUser = Depends(verify_request)):
         raw_bytes = await file.read()
-        name = Path(file.filename or "upload.md").name  # basename only: no path tricks
+        name = _safe_filename(file.filename or "upload.md")
         if repo == "managers" and user.role not in ("manager", "admin"):
             raise HTTPException(status_code=403, detail="managers repo requires the manager role")
         target = settings.github_managers_repo if repo == "managers" else settings.github_docs_repo

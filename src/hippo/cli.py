@@ -148,7 +148,15 @@ def serve(host: str = "127.0.0.1", port: int = 8000):
 
     from .api import build_app
 
-    uvicorn.run(build_app(Settings()), host=host, port=port)
+    settings = Settings()
+    if settings.auth_mode == "none" and host not in ("127.0.0.1", "localhost", "::1"):
+        typer.secho(
+            f"WARNING: serving in auth_mode=none on {host} — every request is an "
+            f"implicit admin and source registration is unrestricted. Set "
+            f"HIPPO_AUTH_MODE=oidc|iap before exposing Hippo beyond localhost.",
+            fg=typer.colors.RED, err=True,
+        )
+    uvicorn.run(build_app(settings), host=host, port=port)
 
 
 @app.command()
