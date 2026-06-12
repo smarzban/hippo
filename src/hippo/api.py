@@ -47,7 +47,7 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
         overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
     )
     agent = build_agent(model_override or settings.chat_model)
-    deps = HubDeps(store=store)
+    deps = HubDeps(store=store, role="admin")  # Task 9 makes this per-request
 
     app = FastAPI(title="Hippo")
     # No CORS middleware: the React UI reaches the API same-origin through the Vite
