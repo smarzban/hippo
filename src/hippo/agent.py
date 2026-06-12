@@ -32,6 +32,7 @@ Voice:
 @dataclass
 class HubDeps:
     store: Storage
+    role: str  # developer | manager | admin — filters every tool's retrieval
 
 
 def build_agent(model) -> Agent[HubDeps, str]:
@@ -50,7 +51,7 @@ def build_agent(model) -> Agent[HubDeps, str]:
         Returns chunks with provenance (path, title, section). Use this first for
         every question; vary the phrasing across calls if results look incomplete.
         """
-        hits = ctx.deps.store.search_hybrid(query, top_k=max(1, top_k))
+        hits = ctx.deps.store.search_hybrid(query, top_k=max(1, top_k), role=ctx.deps.role)
         return [
             {
                 "doc_id": h.document_id,
@@ -69,7 +70,7 @@ def build_agent(model) -> Agent[HubDeps, str]:
         Use this when a chunk looks relevant but truncated, and for 'why' questions
         where surrounding context matters.
         """
-        doc = ctx.deps.store.get_document(doc_id)
+        doc = ctx.deps.store.get_document(doc_id, role=ctx.deps.role)
         if doc is None:
             return {"error": f"no document with id {doc_id}"}
         return {"doc_id": doc.id, "path": doc.path, "title": doc.title, "content": doc.content}
@@ -82,7 +83,7 @@ def build_agent(model) -> Agent[HubDeps, str]:
         """
         return [
             {"doc_id": d.id, "path": d.path, "title": d.title, "summary": d.summary or ""}
-            for d in ctx.deps.store.list_documents(query=query)
+            for d in ctx.deps.store.list_documents(query=query, role=ctx.deps.role)
         ]
 
     @agent.tool
@@ -93,7 +94,7 @@ def build_agent(model) -> Agent[HubDeps, str]:
         search might miss (e.g. 'POLLY_WEBHOOK_URL').
         """
         try:
-            hits = ctx.deps.store.grep(pattern)
+            hits = ctx.deps.store.grep(pattern, role=ctx.deps.role)
         except ValueError as e:
             return [{"error": str(e)}]
         return [

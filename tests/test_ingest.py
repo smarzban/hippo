@@ -42,7 +42,7 @@ def test_ingest_add_update_skip(store, tmp_path):
     assert ing.ingest_file(f, source_type="folder").status == "skipped"
     f.write_text("# A\n\nsecond version")
     assert ing.ingest_file(f, source_type="folder").status == "updated"
-    hits = store.search_hybrid("second version", top_k=3)
+    hits = store.search_hybrid("second version", top_k=3, role="admin")
     assert hits and "second" in hits[0].text
 
 
@@ -60,11 +60,11 @@ def test_sync_removes_deleted_files(store, tmp_path):
     a.write_text("# A\n\nalpha doc")
     (tmp_path / "b.md").write_text("# B\n\nbeta doc")
     sync_folder(tmp_path, store, max_chars=3000, overlap_chars=0)
-    assert len(store.list_documents()) == 2
+    assert len(store.list_documents(role="admin")) == 2
     a.unlink()
     report = sync_folder(tmp_path, store, max_chars=3000, overlap_chars=0)
     assert report.removed == 1
-    assert len(store.list_documents()) == 1
+    assert len(store.list_documents(role="admin")) == 1
 
 
 def test_db_and_dotfiles_ignored_by_sync(store, tmp_path):
@@ -84,11 +84,11 @@ def test_upload_path_collision_distinct_contents_coexist(store):
     r1 = ing.ingest_text("notes.md", "# Notes\n\nfirst project notes")
     r2 = ing.ingest_text("notes.md", "# Notes\n\ncompletely different content")
     assert r1.status == "added" and r2.status == "added"
-    assert len(store.list_documents()) == 2  # both kept, not overwritten
+    assert len(store.list_documents(role="admin")) == 2  # both kept, not overwritten
     # identical re-upload still dedupes by content
     r3 = ing.ingest_text("notes.md", "# Notes\n\nfirst project notes")
     assert r3.status == "skipped"
-    assert len(store.list_documents()) == 2
+    assert len(store.list_documents(role="admin")) == 2
 
 
 def test_empty_file_skipped_not_ghosted(store, tmp_path):
@@ -97,4 +97,4 @@ def test_empty_file_skipped_not_ghosted(store, tmp_path):
     (docs / "empty.md").write_text("")
     report = sync_folder(docs, store, max_chars=3000, overlap_chars=0)
     assert report.skipped == 1 and report.added == 0
-    assert store.list_documents() == []
+    assert store.list_documents(role="admin") == []

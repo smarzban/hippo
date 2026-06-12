@@ -24,7 +24,7 @@ def deps(tmp_path):
         chunks=[Chunk(position=0, heading_path="Polly Telegram", text=text)],
         embed_inputs=[text],
     )
-    return HubDeps(store=store)
+    return HubDeps(store=store, role="admin")
 
 
 async def test_all_four_tools_registered(deps):
@@ -52,7 +52,7 @@ async def test_search_tool_returns_provenance(deps):
 
 
 async def test_read_document_tool(deps):
-    doc_id = deps.store.list_documents()[0].id
+    doc_id = deps.store.list_documents(role="admin")[0].id
 
     def script(messages, info: AgentInfo) -> ModelResponse:
         if len(messages) == 1:
@@ -90,3 +90,45 @@ async def test_grep_invalid_regex_returns_error_dict(deps):
     with agent.override(model=FunctionModel(script)):
         result = await agent.run("find something", deps=deps)
     assert "handled invalid regex" in result.output
+
+
+@pytest.fixture
+def rbac_store(tmp_path):
+    store = Storage(connect(tmp_path / "rbac.db", embedding_dim=32), FakeEmbedder(dim=32))
+    team_sid = store.register_source("folder", "/r/team")
+    mgr_sid = store.register_source("folder", "/r/mgr", access="managers")
+    team_text = "public quarterly roadmap zebra"
+    store.upsert_document(
+        source_type="folder", path="team/a.md", title="Team Roadmap",
+        content=f"# Team Roadmap\n\n{team_text}", content_hash="h1",
+        chunks=[Chunk(position=0, heading_path="Team Roadmap", text=team_text)],
+        embed_inputs=[team_text],
+        source_id=team_sid,
+    )
+    mgr_text = "manager compensation zebra"
+    store.upsert_document(
+        source_type="folder", path="mgr/comp.md", title="Manager Comp",
+        content=f"# Manager Comp\n\n{mgr_text}", content_hash="h2",
+        chunks=[Chunk(position=0, heading_path="Manager Comp", text=mgr_text)],
+        embed_inputs=[mgr_text],
+        source_id=mgr_sid,
+    )
+    return store
+
+
+async def test_agent_search_respects_role(rbac_store):
+    """A developer's agent must not see manager-source chunks through any tool."""
+
+    def call_search_then_answer(messages, info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("search", {"query": "zebra", "top_k": 10})])
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = build_agent(FunctionModel(call_search_then_answer))
+    result = await agent.run("q", deps=HubDeps(store=rbac_store, role="developer"))
+    tool_returns = [
+        p.content for m in result.all_messages() for p in m.parts
+        if getattr(p, "part_kind", "") == "tool-return"
+    ]
+    flat = str(tool_returns)
+    assert "mgr/comp.md" not in flat and "team/a.md" in flat

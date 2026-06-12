@@ -23,6 +23,63 @@ def _store(settings: Settings) -> tuple[Storage, Ingestor]:
     return store, ing
 
 
+role_app = typer.Typer(help="Manage user roles (developer | manager | admin).")
+app.add_typer(role_app, name="role")
+token_app = typer.Typer(help="Personal access tokens for MCP/API clients.")
+app.add_typer(token_app, name="token")
+
+
+@role_app.command("set")
+def role_set(email: str, role: str):
+    """Set a user's role (creates the user if new)."""
+    store, _ = _store(Settings())
+    try:
+        store.set_role(email, role)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    typer.echo(f"{email}: {role}")
+
+
+@role_app.command("list")
+def role_list():
+    """List all users and their roles."""
+    store, _ = _store(Settings())
+    for email, role in store.list_users():
+        typer.echo(f"{role:10} {email}")
+
+
+@token_app.command("create")
+def token_create(email: str, name: str = typer.Option("", help="label, e.g. 'claude-code laptop'")):
+    """Mint a bearer token tied to a user. Shown once; only its hash is stored."""
+    store, _ = _store(Settings())
+    typer.echo(store.create_token(email, name))
+    typer.echo("save it now — it cannot be shown again", err=True)
+
+
+@token_app.command("list")
+def token_list(email: str):
+    """List a user's tokens (id, name, created, last used) — never the secret."""
+    store, _ = _store(Settings())
+    rows = store.list_tokens(email)
+    if not rows:
+        typer.echo("no tokens")
+        return
+    for tid, name, created, last in rows:
+        typer.echo(f"#{tid}  {name or '(unnamed)':20}  created {created}  last used {last or 'never'}")
+
+
+@token_app.command("revoke")
+def token_revoke(email: str, token_id: int):
+    """Revoke (delete) one of a user's tokens by id."""
+    store, _ = _store(Settings())
+    if store.revoke_token(token_id, email):
+        typer.echo(f"revoked token #{token_id} for {email}")
+    else:
+        typer.echo(f"no token #{token_id} for {email}", err=True)
+        raise typer.Exit(1)
+
+
 @app.command()
 def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "--watch")):
     """Sync a folder (and register it), or re-sync all registered sources."""
@@ -31,7 +88,7 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
     enricher = ing.enricher
 
     def run_all() -> None:
-        folders = [Path(folder)] if folder else [Path(loc) for _, kind, loc in store.list_sources() if kind == "folder"]
+        folders = [Path(folder)] if folder else [Path(loc) for _, kind, loc, _access in store.list_sources(role="admin") if kind == "folder"]
         if not folders:
             typer.echo("no sources registered; run: hippo sync <folder>")
             raise typer.Exit(1)
@@ -46,7 +103,7 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
     if watch:
         from watchfiles import watch as fswatch
 
-        targets = [folder] if folder else [loc for _, kind, loc in store.list_sources() if kind == "folder"]
+        targets = [folder] if folder else [loc for _, kind, loc, _access in store.list_sources(role="admin") if kind == "folder"]
         typer.echo(f"watching {targets} (ctrl-c to stop)")
         for _changes in fswatch(*targets):
             run_all()
@@ -68,7 +125,7 @@ def search(query: str, top_k: int = 5):
     """Run a hybrid search directly (debugging aid)."""
     settings = Settings()
     store, _ = _store(settings)
-    for hit in store.search_hybrid(query, top_k=top_k):
+    for hit in store.search_hybrid(query, top_k=top_k, role="admin"):
         typer.echo(f"{hit.score:.4f}  {hit.path}  [{hit.heading_path}]")
         typer.echo(f"        {hit.text[:120]!r}")
 
@@ -91,7 +148,15 @@ def serve(host: str = "127.0.0.1", port: int = 8000):
 
     from .api import build_app
 
-    uvicorn.run(build_app(Settings()), host=host, port=port)
+    settings = Settings()
+    if settings.auth_mode == "none" and host not in ("127.0.0.1", "localhost", "::1"):
+        typer.secho(
+            f"WARNING: serving in auth_mode=none on {host} — every request is an "
+            f"implicit admin and source registration is unrestricted. Set "
+            f"HIPPO_AUTH_MODE=oidc|iap before exposing Hippo beyond localhost.",
+            fg=typer.colors.RED, err=True,
+        )
+    uvicorn.run(build_app(settings), host=host, port=port)
 
 
 @app.command()
@@ -104,7 +169,7 @@ def eval(golden_file: str, top_k: int = 5):
     cases = yaml.safe_load(Path(golden_file).read_text())
     hits = 0
     for case in cases:
-        results = store.search_hybrid(case["question"], top_k=top_k)
+        results = store.search_hybrid(case["question"], top_k=top_k, role="admin")
         found = any(case["expect_path"] in r.path for r in results)
         hits += found
         typer.echo(f"{'PASS' if found else 'MISS'}  {case['question']}")
