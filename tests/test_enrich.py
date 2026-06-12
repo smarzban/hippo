@@ -26,7 +26,7 @@ def test_enricher_feeds_embedding_inputs(tmp_path):
     f.write_text("# A\n\nsome body text")
     res = ing.ingest_file(f, source_type="folder")
     assert res.status == "added"
-    doc = store.list_documents()[0]
+    doc = store.list_documents(role="admin")[0]
     assert doc.summary == "ctxline"
 
 

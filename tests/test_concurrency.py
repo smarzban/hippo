@@ -31,9 +31,9 @@ def test_concurrent_read_write_does_not_corrupt(tmp_path):
     def reader(n: int) -> None:
         try:
             for _ in range(30):
-                store.search_hybrid("telegram webhook", top_k=5)
-                store.list_documents()
-                store.grep("webhook", limit=5)
+                store.search_hybrid("telegram webhook", top_k=5, role="admin")
+                store.list_documents(role="admin")
+                store.grep("webhook", limit=5, role="admin")
         except Exception as e:  # noqa: BLE001
             errors.append(repr(e))
 

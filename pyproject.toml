@@ -14,6 +14,9 @@ dependencies = [
     "markdownify",
     "pyyaml",
     "python-multipart",
+    "pyjwt[crypto]>=2.13.0",
+    "itsdangerous>=2.2.0",
+    "httpx>=0.28.1",
 ]
 
 [project.scripts]
