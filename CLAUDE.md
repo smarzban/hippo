@@ -24,11 +24,13 @@ api.py         build_app(settings, model_override=None): /chat streams Vercel AI
                /ingest: size-checked against HIPPO_MAX_UPLOAD_BYTES (413) and HIPPO_MAX_DOC_CHARS (skipped); takes repo field: commits to GitHub when configured (status "committed") else direct unversioned ingest.
                /sources allowlist via HIPPO_SOURCE_ROOTS; DELETE /sources/{id}.
                Serves ui/dist as static files when HIPPO_UI_DIST is set (single origin, :8000).
+               Mounts FastMCP server at /mcp (HIPPO_MCP_ENABLED, default true) with _McpBearerAuth middleware (bearer token → role via _mcp_role contextvar).
+mcp_server.py  FastMCP server exposing search/read_document/list_documents/grep; mounted at /mcp in api.py with bearer-token auth + role filtering via the _mcp_role contextvar; `hippo mcp` runs it over stdio (as admin, no token).
 auth.py        AuthenticatedUser(email, role), AuthError, check_domain, IapVerifier (ES256 IAP assertions, injectable key_fetcher),
                validate_google_id_token (claims-only, code-flow tokens). Mode wiring lives in api.py: none|oidc|iap + bearer tokens any mode.
                Role FILTERING lives in storage.py, not here.
 chunking.py    chunk_markdown(): heading-aware, atomic code fences, char-based ~750-token chunks; overlap tail is re-checked against max_chars before prepending
-cli.py         Typer: sync [--watch] / add / search / reindex / serve / eval / backup / role set/list / token create
+cli.py         Typer: sync [--watch] / add / search / reindex / serve / mcp / eval / backup / role set/list / token create
 config.py      Settings, env prefix HIPPO_ (pydantic-settings)
 db.py          connect() -> sqlite3: schema, WAL, sqlite-vec, FTS5 + sync triggers
 embeddings.py  Embedder protocol; OpenAIEmbedder (default text-embedding-3-small); FakeEmbedder (deterministic, tests/offline)
@@ -53,7 +55,7 @@ Vite dev-server proxies /chat,/ingest,/documents,/sources to :8000. Tool parts r
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (157 tests, <2s, ZERO network — must stay that way)
+uv run pytest                      # full suite (175 tests, <2s, ZERO network — must stay that way)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all registered sources
 uv run hippo serve                 # API :8000
 cd ui && npm run dev               # chat UI :5173
@@ -91,16 +93,17 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 
 v1 + review-hardening merged to main: storage/hybrid search, ingestion (folder sync + upload),
 enrichment, agent, API, CLI, React UI, eval harness. PR #2 landed two independent-review passes
-(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 157/157 tests,
+(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 175/175 tests,
 eval 4/4 on seed fixtures, UI builds clean. Roadmap items 1+2 (auth/roles/sources) implemented on
 branch `build/auth-and-sources` (PR pending). Roadmap item 3 (production-readiness: ingestion limits,
 grounding enforcement, grep hardening, chunk/drawer fixes, `hippo backup`, Docker, CI, logging)
 implemented on branch `build/production-readiness` (PR #4 merged). Roadmap item 5 (.docx parsing via
 mammoth, `parse_bytes()` entry point, UI upload accepts .docx) implemented on branch
-`build/docx-parsing` (PR pending).
+`build/docx-parsing` (PR pending). Roadmap item 6 (MCP server: FastMCP at /mcp with bearer-token
+auth + role filtering, `hippo mcp` stdio command) implemented on branch `build/mcp-server` (PR pending).
+This completes the current round (items 1, 2, 3, 5, 6).
 
-**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. Next: **MCP server**.
-Then: scale (Postgres+pgvector), Slack, MCP client/connectors, settings UI.
+**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. Next: scale (Postgres+pgvector), Slack, MCP client/connectors, settings UI.
 
 **Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown), Slack bot
 (consumes POST /chat), PDF parsing (planned), Postgres+pgvector migration (reimplement Storage), hierarchical summaries, GraphRAG.

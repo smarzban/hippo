@@ -87,6 +87,25 @@ def test_backup_to_existing_dest_fails_cleanly(tmp_path):
     assert r.exit_code != 0 and "backup failed" in (r.output + str(r.stderr or ""))
 
 
+def test_mcp_command_registered():
+    res = CliRunner().invoke(app, ["--help"])
+    assert "mcp" in res.output
+
+
+def test_mcp_builder_lists_four_tools(tmp_path):
+    import asyncio
+
+    from hippo.db import connect
+    from hippo.embeddings import FakeEmbedder
+    from hippo.mcp_server import build_mcp_server
+    from hippo.storage import Storage
+
+    store = Storage(connect(tmp_path / "t.db", embedding_dim=32), FakeEmbedder(dim=32))
+    server = build_mcp_server(store, require_auth=False)
+    names = {t.name for t in asyncio.run(server.list_tools())}
+    assert names == {"search", "read_document", "list_documents", "grep"}
+
+
 def test_token_list_and_revoke(tmp_path):
     env = _env(tmp_path)
     create = runner.invoke(app, ["token", "create", "a@x.com"], env=env)
