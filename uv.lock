@@ -461,6 +461,15 @@ wheels = [
 ]
 
 [[package]]
+name = "cobble"
+version = "0.1.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/7a/a507c709be2c96e1bb6102eb7b7f4026c5e5e223ef7d745a17d239e9d844/cobble-0.1.4.tar.gz", hash = "sha256:de38be1539992c8a06e569630717c485a5f91be2192c461ea2b220607dfa78aa", size = 3805, upload-time = "2024-06-01T18:11:09.528Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/e1/3714a2f371985215c219c2a70953d38e3eed81ef165aed061d21de0e998b/cobble-0.1.4-py3-none-any.whl", hash = "sha256:36c91b1655e599fd428e2b95fdd5f0da1ca2e9f1abb0bc871dec21a0e78a2b44", size = 3984, upload-time = "2024-06-01T18:11:07.911Z" },
+]
+
+[[package]]
 name = "cohere"
 version = "7.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1031,6 +1040,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "itsdangerous" },
+    { name = "mammoth" },
     { name = "markdownify" },
     { name = "pydantic-ai" },
     { name = "pydantic-settings" },
@@ -1056,6 +1066,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.136.3" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
+    { name = "mammoth", specifier = ">=1.6.0" },
     { name = "markdownify", specifier = ">=1.2.2" },
     { name = "pydantic-ai", specifier = ">=1.107.0" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
@@ -1444,6 +1455,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/73/d6/250d4f099cf72f508f168d6a5a481a7f00482703b6bd7da6ea169c28f4b7/logfire_api-4.36.0.tar.gz", hash = "sha256:02167aa9e689f4807c633051eaf989577155553bf0f9f2a54c8c739f8a2646c6", size = 88881, upload-time = "2026-06-09T19:16:02.224Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b5/81/4b3b994c9649daa3af426c1199a9b4145685eb2d602048b7d7dd79073e18/logfire_api-4.36.0-py3-none-any.whl", hash = "sha256:e2898270969d05b654366b8179576a741065bb22a031078088045ff6ffead0e7", size = 138676, upload-time = "2026-06-09T19:15:59.565Z" },
+]
+
+[[package]]
+name = "mammoth"
+version = "1.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cobble" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/af/0c/b8d04b142c28f705ac434aedfb492f62e3fa9082421b6aa0ec7be9202dc7/mammoth-1.12.0.tar.gz", hash = "sha256:10955a55d9173167b550de3aeb8f2ed48b420756fd66378156b2f78661a33dd5", size = 53388, upload-time = "2026-03-12T21:42:37.289Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/a4/0cce02ffb7c75211e7723250bf254c7a320a17368345859beba75637262a/mammoth-1.12.0-py2.py3-none-any.whl", hash = "sha256:d195ae2403b98276d7646e252035b6f70adb255987bb267e9eac6bc6531fe38f", size = 54919, upload-time = "2026-03-12T21:42:35.745Z" },
 ]
 
 [[package]]

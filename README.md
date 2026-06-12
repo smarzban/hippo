@@ -1,7 +1,9 @@
 # Hippo
 
-Agentic team brain: feed it markdown/text/Google-Docs-exports, ask it questions in chat.
+Agentic team brain: feed it markdown/text/HTML/`.docx`/Google-Docs-exports, ask it questions in chat.
 Spec: `docs/superpowers/specs/2026-06-11-knowledge-hub-design.md` · Decisions: `...-decisions.md`
+
+**Supported upload/ingest formats:** `.md`, `.txt`, `.html`, `.docx` (Word / Google-Docs "Download as .docx"). Download a Google Doc as `.docx` and upload it — headings are preserved. PDF and direct Google-Drive links are not yet supported (planned).
 
 ## Quickstart
 
