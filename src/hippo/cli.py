@@ -23,6 +23,40 @@ def _store(settings: Settings) -> tuple[Storage, Ingestor]:
     return store, ing
 
 
+role_app = typer.Typer(help="Manage user roles (developer | manager | admin).")
+app.add_typer(role_app, name="role")
+token_app = typer.Typer(help="Personal access tokens for MCP/API clients.")
+app.add_typer(token_app, name="token")
+
+
+@role_app.command("set")
+def role_set(email: str, role: str):
+    """Set a user's role (creates the user if new)."""
+    store, _ = _store(Settings())
+    try:
+        store.set_role(email, role)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    typer.echo(f"{email}: {role}")
+
+
+@role_app.command("list")
+def role_list():
+    """List all users and their roles."""
+    store, _ = _store(Settings())
+    for email, role in store.list_users():
+        typer.echo(f"{role:10} {email}")
+
+
+@token_app.command("create")
+def token_create(email: str, name: str = typer.Option("", help="label, e.g. 'claude-code laptop'")):
+    """Mint a bearer token tied to a user. Shown once; only its hash is stored."""
+    store, _ = _store(Settings())
+    typer.echo(store.create_token(email, name))
+    typer.echo("save it now — it cannot be shown again", err=True)
+
+
 @app.command()
 def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "--watch")):
     """Sync a folder (and register it), or re-sync all registered sources."""

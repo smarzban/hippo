@@ -43,3 +43,18 @@ def test_search_command(tmp_path):
     r = runner.invoke(app, ["search", "telegram"], env=_env(tmp_path))
     assert r.exit_code == 0
     assert "note.md" in r.output
+
+
+def test_role_set_and_list(tmp_path):
+    env = _env(tmp_path)
+    r = runner.invoke(app, ["role", "set", "a@x.com", "manager"], env=env)
+    assert r.exit_code == 0
+    r = runner.invoke(app, ["role", "list"], env=env)
+    assert "manager" in r.output and "a@x.com" in r.output
+    r = runner.invoke(app, ["role", "set", "a@x.com", "superuser"], env=env)
+    assert r.exit_code != 0
+
+
+def test_token_create_prints_token(tmp_path):
+    r = runner.invoke(app, ["token", "create", "a@x.com", "--name", "laptop"], env=_env(tmp_path))
+    assert r.exit_code == 0 and "hk_" in r.output
