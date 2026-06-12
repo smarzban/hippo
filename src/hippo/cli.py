@@ -68,7 +68,7 @@ def search(query: str, top_k: int = 5):
     """Run a hybrid search directly (debugging aid)."""
     settings = Settings()
     store, _ = _store(settings)
-    for hit in store.search_hybrid(query, top_k=top_k):
+    for hit in store.search_hybrid(query, top_k=top_k, role="admin"):
         typer.echo(f"{hit.score:.4f}  {hit.path}  [{hit.heading_path}]")
         typer.echo(f"        {hit.text[:120]!r}")
 
@@ -104,7 +104,7 @@ def eval(golden_file: str, top_k: int = 5):
     cases = yaml.safe_load(Path(golden_file).read_text())
     hits = 0
     for case in cases:
-        results = store.search_hybrid(case["question"], top_k=top_k)
+        results = store.search_hybrid(case["question"], top_k=top_k, role="admin")
         found = any(case["expect_path"] in r.path for r in results)
         hits += found
         typer.echo(f"{'PASS' if found else 'MISS'}  {case['question']}")

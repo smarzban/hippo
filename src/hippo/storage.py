@@ -155,22 +155,32 @@ class Storage:
             row = self.con.execute("SELECT content_hash FROM documents WHERE path=?", (path,)).fetchone()
         return bool(row and row[0] == content_hash)
 
-    def get_document(self, doc_id: int) -> Document | None:
+    def get_document(self, doc_id: int, *, role: str) -> Document | None:
         with self._lock:
             row = self.con.execute(
-                "SELECT id, source_type, path, title, content, content_hash, summary FROM documents WHERE id=?",
+                """SELECT d.id, d.source_type, d.path, d.title, d.content, d.content_hash,
+                          d.summary, s.access
+                   FROM documents d LEFT JOIN sources s ON s.id = d.source_id WHERE d.id=?""",
                 (doc_id,),
             ).fetchone()
-        return Document(*row) if row else None
+        if row is None or not _visible(role, row[7]):
+            return None
+        return Document(*row[:7])
 
-    def list_documents(self, query: str | None = None) -> list[Document]:
-        sql = "SELECT id, source_type, path, title, content, content_hash, summary FROM documents"
-        args: tuple = ()
+    def list_documents(self, query: str | None = None, *, role: str) -> list[Document]:
+        sql = ("SELECT d.id, d.source_type, d.path, d.title, d.content, d.content_hash, d.summary "
+               "FROM documents d LEFT JOIN sources s ON s.id = d.source_id")
+        where: list[str] = []
+        args: list = []
+        if role not in MANAGER_ROLES:
+            where.append("(s.access IS NULL OR s.access != 'managers')")
         if query:
-            sql += " WHERE title LIKE ? OR path LIKE ? OR coalesce(summary,'') LIKE ?"
+            where.append("(d.title LIKE ? OR d.path LIKE ? OR coalesce(d.summary,'') LIKE ?)")
             like = f"%{query}%"
-            args = (like, like, like)
-        sql += " ORDER BY path"
+            args += [like, like, like]
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY d.path"
         with self._lock:
             return [Document(*r) for r in self.con.execute(sql, args)]
 
@@ -267,7 +277,7 @@ class Storage:
 
     RRF_K = 60
 
-    def search_hybrid(self, query: str, top_k: int = 8) -> list[SearchHit]:
+    def search_hybrid(self, query: str, top_k: int = 8, *, role: str) -> list[SearchHit]:
         """FTS5 BM25 + vector KNN, merged with Reciprocal Rank Fusion."""
         if not query.strip():
             return []
@@ -279,9 +289,14 @@ class Storage:
             for ranked in (fts_ranked, vec_ranked):
                 for rank, chunk_id in enumerate(ranked):
                     scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (self.RRF_K + rank + 1)
-            best = sorted(scores, key=scores.__getitem__, reverse=True)[:top_k]
-            hits = [self._hit(cid, scores[cid]) for cid in best]
-        return [h for h in hits if h is not None]  # drop orphan vec rowids (see _hit)
+            hits: list[SearchHit] = []
+            for cid in sorted(scores, key=scores.__getitem__, reverse=True):
+                hit = self._hit(cid, scores[cid], role)
+                if hit is not None:
+                    hits.append(hit)
+                if len(hits) >= top_k:
+                    break
+        return hits
 
     def _search_fts(self, query: str, limit: int) -> list[int]:
         # quote each token so user punctuation can't break FTS query syntax
@@ -302,16 +317,20 @@ class Storage:
         )
         return [r[0] for r in rows]
 
-    def _hit(self, chunk_id: int, score: float) -> SearchHit | None:
+    def _hit(self, chunk_id: int, score: float, role: str) -> SearchHit | None:
         row = self.con.execute(
-            """SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text
-               FROM chunks c JOIN documents d ON d.id = c.document_id WHERE c.id=?""",
+            """SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text, s.access
+               FROM chunks c JOIN documents d ON d.id = c.document_id
+               LEFT JOIN sources s ON s.id = d.source_id WHERE c.id=?""",
             (chunk_id,),
         ).fetchone()
         # An orphan chunk_vec rowid (no matching chunk) yields None: skip it rather
         # than crash on SearchHit(*None). FK CASCADE keeps chunks/FTS in sync but
         # not the vec0 table, so deletion stays centralized in _delete_chunks.
-        return SearchHit(*row, score=score) if row else None
+        # Rows invisible to the caller's role are also filtered here.
+        if row is None or not _visible(role, row[6]):
+            return None
+        return SearchHit(*row[:6], score=score)
 
     def reindex(self, embedding_dim: int, *, batch: int = 64) -> int:
         """Re-embed every chunk with the current embedder and rebuild chunk_vec.
@@ -348,7 +367,7 @@ class Storage:
             )
         return len(rows)
 
-    def grep(self, pattern: str, limit: int = 20) -> list[SearchHit]:
+    def grep(self, pattern: str, limit: int = 20, *, role: str) -> list[SearchHit]:
         """Exact/regex scan over raw chunk text. Complements the indexes for
         identifiers and codenames. Corpus is small; a full scan is fine.
 
@@ -362,13 +381,16 @@ class Storage:
         # outside it so a scan never holds the connection against other threads.
         with self._lock:
             rows = self.con.execute(
-                """SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text
-                   FROM chunks c JOIN documents d ON d.id = c.document_id"""
+                """SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text, s.access
+                   FROM chunks c JOIN documents d ON d.id = c.document_id
+                   LEFT JOIN sources s ON s.id = d.source_id"""
             ).fetchall()
         hits: list[SearchHit] = []
         for row in rows:
+            if not _visible(role, row[6]):
+                continue
             if rx.search(row[5]):
-                hits.append(SearchHit(*row, score=1.0))
+                hits.append(SearchHit(*row[:6], score=1.0))
                 if len(hits) >= limit:
                     break
         return hits

@@ -84,12 +84,12 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
     async def documents(query: str | None = None, _=Depends(verify_request)):
         return [
             {"id": d.id, "path": d.path, "title": d.title, "summary": d.summary}
-            for d in store.list_documents(query=query)
+            for d in store.list_documents(query=query, role="admin")
         ]
 
     @app.get("/documents/{doc_id}")
     async def document(doc_id: int, _=Depends(verify_request)):
-        doc = store.get_document(doc_id)
+        doc = store.get_document(doc_id, role="admin")
         if doc is None:
             raise HTTPException(status_code=404, detail="document not found")
         return {"id": doc.id, "path": doc.path, "title": doc.title, "content": doc.content, "summary": doc.summary}

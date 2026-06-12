@@ -52,7 +52,7 @@ async def test_search_tool_returns_provenance(deps):
 
 
 async def test_read_document_tool(deps):
-    doc_id = deps.store.list_documents()[0].id
+    doc_id = deps.store.list_documents(role="admin")[0].id
 
     def script(messages, info: AgentInfo) -> ModelResponse:
         if len(messages) == 1:

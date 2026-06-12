@@ -35,7 +35,7 @@ def _doc(store, path="polly/integrations.md", text="Telegram webhook setup for p
 
 def test_upsert_and_get(store):
     doc_id = _doc(store)
-    doc = store.get_document(doc_id)
+    doc = store.get_document(doc_id, role="admin")
     assert doc.title == "Polly Integrations"
     assert "Telegram webhook" in doc.content
 
@@ -68,7 +68,7 @@ def test_update_replaces_chunks(store):
 def test_delete_document(store):
     doc_id = _doc(store)
     store.delete_document_by_path("polly/integrations.md")
-    assert store.get_document(doc_id) is None
+    assert store.get_document(doc_id, role="admin") is None
     assert store.con.execute("SELECT count(*) FROM chunk_vec").fetchone()[0] == 0
     assert store.con.execute("SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH '\"telegram\"'").fetchone()[0] == 0
 
@@ -76,9 +76,9 @@ def test_delete_document(store):
 def test_list_documents(store):
     _doc(store)
     _doc(store, path="other/budget.md", text="Quarterly budget numbers.")
-    docs = store.list_documents()
+    docs = store.list_documents(role="admin")
     assert len(docs) == 2
-    filtered = store.list_documents(query="budget")
+    filtered = store.list_documents(query="budget", role="admin")
     assert len(filtered) == 1 and filtered[0].path == "other/budget.md"
 
 
@@ -93,7 +93,7 @@ def test_orphan_vec_rowid_is_skipped_not_crash(store):
         (999999, sqlite_vec.serialize_float32([0.1] * 32)),
     )
     store.con.commit()
-    hits = store.search_hybrid("telegram webhook", top_k=8)
+    hits = store.search_hybrid("telegram webhook", top_k=8, role="admin")
     assert all(h is not None for h in hits)
     assert 999999 not in [h.chunk_id for h in hits]
 
@@ -115,7 +115,7 @@ def test_embedding_model_stamp_persists_and_matches(store):
     assert row[0] == "fake"
     # same model is fine
     _doc(store, path="second.md", text="another doc about slack")
-    assert len(store.list_documents()) == 2
+    assert len(store.list_documents(role="admin")) == 2
 
 
 def test_reindex_rebuilds_vectors(store):
@@ -124,7 +124,7 @@ def test_reindex_rebuilds_vectors(store):
     assert n == 1
     assert store.con.execute("SELECT count(*) FROM chunk_vec").fetchone()[0] == 1
     # still searchable after rebuild
-    assert store.search_hybrid("telegram webhook", top_k=3)
+    assert store.search_hybrid("telegram webhook", top_k=3, role="admin")
 
 
 def test_reindex_failure_preserves_existing_vectors(store):
@@ -222,3 +222,30 @@ def test_delete_source_removes_documents(store):
     assert store.list_sources() == []
     assert store.document_exists("d.md") is False
     assert store.delete_source(999) is False
+
+
+@pytest.fixture
+def rbac_store(store):
+    team = store.register_source("folder", "/r/team")
+    mgr = store.register_source("folder", "/r/mgr", access="managers")
+    _add_doc(store, "team/a.md", "public quarterly roadmap zebra", source_id=team)
+    _add_doc(store, "mgr/comp.md", "manager compensation zebra", source_id=mgr)
+    _add_doc(store, "upload/x.md", "uploaded note zebra", source_id=None)
+    return store
+
+
+def test_search_filters_manager_sources(rbac_store):
+    dev_paths = {h.path for h in rbac_store.search_hybrid("zebra", top_k=10, role="developer")}
+    assert "mgr/comp.md" not in dev_paths and "team/a.md" in dev_paths and "upload/x.md" in dev_paths
+    mgr_paths = {h.path for h in rbac_store.search_hybrid("zebra", top_k=10, role="manager")}
+    assert "mgr/comp.md" in mgr_paths
+
+
+def test_list_get_and_grep_filter_by_role(rbac_store):
+    assert {d.path for d in rbac_store.list_documents(role="developer")} == {"team/a.md", "upload/x.md"}
+    assert {d.path for d in rbac_store.list_documents(role="admin")} >= {"mgr/comp.md"}
+    mgr_id = next(d.id for d in rbac_store.list_documents(role="admin") if d.path == "mgr/comp.md")
+    assert rbac_store.get_document(mgr_id, role="developer") is None
+    assert rbac_store.get_document(mgr_id, role="manager") is not None
+    assert all(h.path != "mgr/comp.md" for h in rbac_store.grep("compensation", role="developer"))
+    assert any(h.path == "mgr/comp.md" for h in rbac_store.grep("compensation", role="admin"))
