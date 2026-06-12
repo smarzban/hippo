@@ -1,5 +1,6 @@
 import hashlib
 import re
+import regex
 import secrets
 import sqlite3
 import threading
@@ -35,6 +36,9 @@ class SearchHit:
 
 VALID_ROLES = ("developer", "manager", "admin")
 MANAGER_ROLES = ("manager", "admin")
+
+GREP_MAX_PATTERN = 200      # reject absurdly long patterns
+GREP_TIMEOUT_S = 2.0        # wall-clock cap per chunk scan (regex module)
 
 
 def _norm_email(e: str) -> str:
@@ -437,10 +441,14 @@ class Storage:
         identifiers and codenames. Corpus is small; a full scan is fine.
 
         Invalid regex (the agent may construct one) raises ValueError so the
-        caller/tool layer can surface a correctable message."""
+        caller/tool layer can surface a correctable message.
+        Patterns exceeding GREP_MAX_PATTERN chars or those whose scan exceeds
+        GREP_TIMEOUT_S wall-clock seconds also raise ValueError."""
+        if len(pattern) > GREP_MAX_PATTERN:
+            raise ValueError(f"pattern too long (max {GREP_MAX_PATTERN} chars)")
         try:
-            rx = re.compile(pattern, re.IGNORECASE)
-        except re.error as e:
+            rx = regex.compile(pattern, regex.IGNORECASE)
+        except regex.error as e:
             raise ValueError(f"invalid regex pattern {pattern!r}: {e}") from e
         # Materialize rows under the lock, then run the (potentially slow) regex
         # outside it so a scan never holds the connection against other threads.
@@ -454,7 +462,11 @@ class Storage:
         for row in rows:
             if not _visible(role, row[6]):
                 continue
-            if rx.search(row[5]):
+            try:
+                matched = rx.search(row[5], timeout=GREP_TIMEOUT_S)
+            except TimeoutError as e:
+                raise ValueError(f"pattern took too long (>{GREP_TIMEOUT_S}s)") from e
+            if matched:
                 hits.append(SearchHit(*row[:6], score=1.0))
                 if len(hits) >= limit:
                     break

@@ -300,6 +300,32 @@ def test_fts_candidates_are_role_filtered(store):
     assert len(mgr_ids) == 10
 
 
+def test_grep_rejects_overlong_pattern(store):
+    import pytest
+    from hippo import storage
+    _add_doc(store, "a.md", "hello world")
+    with pytest.raises(ValueError, match="too long"):
+        store.grep("x" * (storage.GREP_MAX_PATTERN + 1), role="admin")
+
+
+def test_grep_times_out_on_catastrophic_pattern(store, monkeypatch):
+    import time, pytest
+    from hippo import storage
+    monkeypatch.setattr(storage, "GREP_TIMEOUT_S", 0.2)
+    # a chunk that triggers catastrophic backtracking for (a|aa)+$
+    _add_doc(store, "evil.md", "a" * 50 + "!")
+    t0 = time.monotonic()
+    with pytest.raises(ValueError, match="too long|too long to|took too long"):
+        store.grep(r"(a|aa)+$", role="admin")
+    assert time.monotonic() - t0 < 2.0  # bounded by the 0.2s timeout, not hanging
+
+
+def test_grep_normal_pattern_still_matches(store):
+    _add_doc(store, "doc.md", "the POLLY_WEBHOOK_URL config value")
+    hits = store.grep(r"POLLY_\w+", role="admin")
+    assert hits and hits[0].path == "doc.md"
+
+
 def test_token_revoke_and_list(store):
     t1 = store.create_token("a@x.com", name="laptop")
     store.create_token("a@x.com", name="ci")

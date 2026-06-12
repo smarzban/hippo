@@ -17,6 +17,7 @@ dependencies = [
     "pyjwt[crypto]>=2.13.0",
     "itsdangerous>=2.2.0",
     "httpx>=0.28.1",
+    "regex>=2024.0.0",
 ]
 
 [project.scripts]
