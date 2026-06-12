@@ -6,6 +6,14 @@ from hippo.embeddings import FakeEmbedder
 from hippo.storage import Storage
 
 
+def _add_doc(store, path, text, source_id=None, title=None):
+    return store.upsert_document(
+        source_type="folder", path=path, title=title or path, content=text,
+        content_hash=path + "h", chunks=[Chunk(position=0, heading_path=path, text=text)],
+        embed_inputs=[text], source_id=source_id,
+    )
+
+
 @pytest.fixture
 def store(tmp_path):
     con = connect(tmp_path / "t.db", embedding_dim=32)
@@ -180,3 +188,24 @@ def test_token_roundtrip_and_hashing(store):
     # only the hash is stored — the raw token must not appear in the db
     raw = store.con.execute("SELECT token_hash FROM tokens").fetchone()[0]
     assert t not in raw and t[3:] not in raw
+
+
+def test_register_source_with_access_and_update(store):
+    sid = store.register_source("folder", "/r/team")
+    assert (sid, "folder", "/r/team", "everyone") in store.list_sources()
+    sid2 = store.register_source("folder", "/r/mgr", access="managers")
+    assert (sid2, "folder", "/r/mgr", "managers") in store.list_sources()
+    # re-registering updates access in place
+    store.register_source("folder", "/r/mgr", access="everyone")
+    assert (sid2, "folder", "/r/mgr", "everyone") in store.list_sources()
+    with pytest.raises(ValueError):
+        store.register_source("folder", "/r/x", access="secret")
+
+
+def test_delete_source_removes_documents(store):
+    sid = store.register_source("folder", "/r/gone")
+    _add_doc(store, "d.md", "manager budget text", source_id=sid)
+    assert store.delete_source(sid) is True
+    assert store.list_sources() == []
+    assert store.document_exists("d.md") is False
+    assert store.delete_source(999) is False

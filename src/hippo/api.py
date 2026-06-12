@@ -96,7 +96,8 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
 
     @app.get("/sources")
     async def sources(_=Depends(verify_request)):
-        return [{"id": i, "kind": k, "location": loc} for i, k, loc in store.list_sources()]
+        return [{"id": i, "kind": k, "location": loc, "access": acc}
+                for i, k, loc, acc in store.list_sources()]
 
     @app.post("/sources")
     async def add_source(body: SourceIn, _=Depends(verify_request)):

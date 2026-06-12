@@ -180,18 +180,37 @@ class Storage:
 
     # -- sources -----------------------------------------------------------
 
-    def register_source(self, kind: str, location: str) -> int:
+    def register_source(self, kind: str, location: str, access: str = "everyone") -> int:
+        if access not in ("everyone", "managers"):
+            raise ValueError(f"invalid access {access!r}; expected 'everyone' or 'managers'")
         with self._lock:
             with self.con:
                 self.con.execute(
-                    "INSERT INTO sources(kind, location) VALUES (?,?) ON CONFLICT(location) DO NOTHING",
-                    (kind, location),
+                    "INSERT INTO sources(kind, location, access) VALUES (?,?,?) "
+                    "ON CONFLICT(location) DO UPDATE SET access=excluded.access",
+                    (kind, location, access),
                 )
-            return self.con.execute("SELECT id FROM sources WHERE location=?", (location,)).fetchone()[0]
+            return self.con.execute(
+                "SELECT id FROM sources WHERE location=?", (location,)
+            ).fetchone()[0]
 
-    def list_sources(self) -> list[tuple[int, str, str]]:
+    def list_sources(self) -> list[tuple[int, str, str, str]]:
         with self._lock:
-            return list(self.con.execute("SELECT id, kind, location FROM sources ORDER BY id"))
+            return list(self.con.execute("SELECT id, kind, location, access FROM sources ORDER BY id"))
+
+    def delete_source(self, source_id: int) -> bool:
+        """Remove a source and every document (and chunk/vector) ingested from it."""
+        with self._lock:
+            if not self.con.execute("SELECT 1 FROM sources WHERE id=?", (source_id,)).fetchone():
+                return False
+            doc_ids = [r[0] for r in self.con.execute(
+                "SELECT id FROM documents WHERE source_id=?", (source_id,))]
+            with self.con:
+                for did in doc_ids:
+                    self._delete_chunks(did)
+                self.con.execute("DELETE FROM documents WHERE source_id=?", (source_id,))
+                self.con.execute("DELETE FROM sources WHERE id=?", (source_id,))
+            return True
 
     # -- users / roles -------------------------------------------------------
 
