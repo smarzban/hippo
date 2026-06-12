@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DocDrawer } from "./DocDrawer";
-import { buildDocIndex, type DocMeta, MARKER_RE, processCitations } from "./citations";
+import { buildDocIndex, type DocIndex, type DocMeta, MARKER_RE, processCitations } from "./citations";
 
 type OpenDoc = { id: number; section: string };
 
@@ -36,7 +36,7 @@ function AssistantText({
   onOpen,
 }: {
   text: string;
-  docIndex: Map<string, DocMeta>;
+  docIndex: DocIndex;
   onOpen: (id: number, section: string) => void;
 }) {
   const { processed, sources } = useMemo(
@@ -109,7 +109,7 @@ export default function App() {
   });
   const [input, setInput] = useState("");
   const [uploadNote, setUploadNote] = useState("");
-  const [docIndex, setDocIndex] = useState<Map<string, DocMeta>>(new Map());
+  const [docIndex, setDocIndex] = useState<DocIndex>(new Map());
   const [openDoc, setOpenDoc] = useState<OpenDoc | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -224,7 +224,13 @@ export default function App() {
         ))}
 
         {status === "submitted" && <div className="thinking">&bull;&bull;&bull;</div>}
-        {error && <div className="error">Something went wrong: {error.message}</div>}
+        {error && (
+          <div className="error">
+            {/limit/i.test(error.message)
+              ? "I reached my research limit for this question — it needed more lookups than I'm allowed per answer. Try narrowing it, or ask about one thing at a time."
+              : `Something went wrong: ${error.message}`}
+          </div>
+        )}
         <div ref={bottomRef} />
       </main>
 
