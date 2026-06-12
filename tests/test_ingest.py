@@ -78,6 +78,19 @@ def test_db_and_dotfiles_ignored_by_sync(store, tmp_path):
     assert report.added == 1 and report.failed == 0
 
 
+def test_upload_path_collision_distinct_contents_coexist(store):
+    """L4: two different uploads sharing a filename must not silently overwrite."""
+    ing = Ingestor(store, max_chars=3000, overlap_chars=0)
+    r1 = ing.ingest_text("notes.md", "# Notes\n\nfirst project notes")
+    r2 = ing.ingest_text("notes.md", "# Notes\n\ncompletely different content")
+    assert r1.status == "added" and r2.status == "added"
+    assert len(store.list_documents()) == 2  # both kept, not overwritten
+    # identical re-upload still dedupes by content
+    r3 = ing.ingest_text("notes.md", "# Notes\n\nfirst project notes")
+    assert r3.status == "skipped"
+    assert len(store.list_documents()) == 2
+
+
 def test_empty_file_skipped_not_ghosted(store, tmp_path):
     docs = tmp_path / "docs2"
     docs.mkdir()

@@ -5,38 +5,60 @@
 
 export type DocMeta = { id: number; path: string; title: string };
 
+// Basenames and titles can collide across documents; the full path is unique
+// (documents.path is UNIQUE). Collisions on a non-unique key resolve to AMBIGUOUS
+// so we render the citation non-clickable instead of linking the wrong document.
+const AMBIGUOUS = "ambiguous";
+export type DocIndex = Map<string, DocMeta | typeof AMBIGUOUS>;
+
 // [a > b] (requires a " > " so normal [text](link) markdown is left alone) or 【a > b】.
 export const CITE_RE = /【([^】]+)】|\[([^\][\n]+? > [^\][\n]+?)\]/g;
 
 // Sentinel wrapped in backticks so it survives as an inline-code node in markdown.
 export const MARKER_RE = /^⟦(\d+)⟧$/; // ⟦N⟧
 
-export function buildDocIndex(docs: DocMeta[]): Map<string, DocMeta> {
-  const idx = new Map<string, DocMeta>();
+export function buildDocIndex(docs: DocMeta[]): DocIndex {
+  const idx: DocIndex = new Map();
+  const add = (key: string | undefined, d: DocMeta) => {
+    if (!key) return;
+    const k = key.toLowerCase();
+    const cur = idx.get(k);
+    if (cur === undefined) idx.set(k, d);
+    else if (cur !== AMBIGUOUS && cur.id !== d.id) idx.set(k, AMBIGUOUS);
+  };
   for (const d of docs) {
-    const base = (d.path.split("/").pop() || d.path).toLowerCase();
-    idx.set(base, d);
-    if (d.title) idx.set(d.title.toLowerCase(), d);
+    add(d.path, d); // full path — unique, the disambiguating key
+    add(d.path.split("/").pop(), d); // basename — may collide
+    add(d.title, d); // title — may collide
   }
   return idx;
 }
 
+function lookup(idx: DocIndex, key: string | undefined): DocMeta | null {
+  if (!key) return null;
+  const v = idx.get(key.toLowerCase());
+  return v && v !== AMBIGUOUS ? v : null;
+}
+
 export type Source = {
   num: number;
-  docId: number | null; // null => couldn't resolve to an indexed doc (non-clickable)
+  docId: number | null; // null => unresolved or ambiguous (rendered non-clickable)
   title: string; // display name for the document
   section: string; // heading path below the document title, joined with ›
   scrollTarget: string; // last heading segment, used to scroll the drawer
 };
 
-function resolveCitation(inner: string, docIndex: Map<string, DocMeta>): Omit<Source, "num"> {
+function resolveCitation(inner: string, docIndex: DocIndex): Omit<Source, "num"> {
   const segments = inner
     .split(">")
     .map((s) => s.trim())
     .filter(Boolean);
   const seg0 = segments[0] ?? inner.trim();
-  const base = (seg0.split("/").pop() || seg0).trim().toLowerCase();
-  const hit = docIndex.get(base) ?? docIndex.get(seg0.toLowerCase());
+  const base = (seg0.split("/").pop() || seg0).trim();
+  // seg0 as given first (it may be a full path or an exact title — both unique
+  // when they resolve), then fall back to basename. A collision on the chosen
+  // key returns null => non-clickable, never the wrong document.
+  const hit = lookup(docIndex, seg0) ?? lookup(docIndex, base);
 
   let rest = segments.slice(1);
   const title = hit ? hit.title : seg0.split("/").pop() || seg0;
@@ -55,7 +77,7 @@ function resolveCitation(inner: string, docIndex: Map<string, DocMeta>): Omit<So
 
 export function processCitations(
   text: string,
-  docIndex: Map<string, DocMeta>,
+  docIndex: DocIndex,
 ): { processed: string; sources: Source[] } {
   const sources: Source[] = [];
   const keyToNum = new Map<string, number>();
