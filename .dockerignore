@@ -1,0 +1,12 @@
+.venv
+.env
+.env.*
+**/node_modules
+ui/dist
+*.db
+*.db-*
+.git
+__pycache__
+**/__pycache__
+.pytest_cache
+*.pyc

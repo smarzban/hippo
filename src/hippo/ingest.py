@@ -1,10 +1,13 @@
 import hashlib
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .chunking import chunk_markdown
 from .parsers import SUPPORTED, parse_content, parse_file
 from .storage import Storage
+
+log = logging.getLogger("hippo.ingest")
 
 
 @dataclass
@@ -47,17 +50,20 @@ class SyncReport:
 class Ingestor:
     """The one pipeline: parse -> hash/dedupe -> chunk -> (enrich) -> embed+index."""
 
-    def __init__(self, store: Storage, *, max_chars: int, overlap_chars: int, enricher=None):
+    def __init__(self, store: Storage, *, max_chars: int, overlap_chars: int,
+                 enricher=None, max_doc_chars: int | None = None):
         self.store = store
         self.max_chars = max_chars
         self.overlap_chars = overlap_chars
         self.enricher = enricher  # Task 9; None = enrichment off
+        self.max_doc_chars = max_doc_chars
 
     def ingest_file(self, path: Path, *, source_type: str, source_id: int | None = None) -> IngestResult:
         try:
             title, md = parse_file(path)
             return self._index(str(path), title, md, source_type=source_type, source_id=source_id)
         except Exception as e:  # per-file isolation: one bad file never kills a sync
+            log.warning("failed %s: %s", path, e)
             return IngestResult(path=str(path), status="failed", error=str(e))
 
     def ingest_text(self, name: str, raw: str, *, suffix: str = ".md", source_type: str = "upload") -> IngestResult:
@@ -72,14 +78,21 @@ class Ingestor:
             digest = hashlib.sha256(md.encode()).hexdigest()[:8]
             return self._index(f"upload/{digest}-{name}", title, md, source_type=source_type, source_id=None)
         except Exception as e:
+            log.warning("failed %s: %s", name, e)
             return IngestResult(path=name, status="failed", error=str(e))
 
     def _index(self, path: str, title: str, md: str, *, source_type: str, source_id: int | None) -> IngestResult:
         if not md.strip():
+            log.debug("skipped %s: empty content", path)
             return IngestResult(path=path, status="skipped")  # no ghost documents
+        if self.max_doc_chars and len(md) > self.max_doc_chars:
+            log.info("skipped %s: exceeds max_doc_chars", path)
+            return IngestResult(path=path, status="skipped",
+                                error=f"document exceeds max_doc_chars ({self.max_doc_chars})")
         content_hash = hashlib.sha256(md.encode()).hexdigest()
         existed = self.store.document_exists(path)  # via Storage; no SQL outside storage.py
         if self.store.is_unchanged(path, content_hash):
+            log.debug("skipped %s: unchanged", path)
             return IngestResult(path=path, status="skipped")
 
         chunks = chunk_markdown(md, max_chars=self.max_chars, overlap_chars=self.overlap_chars)
@@ -96,7 +109,9 @@ class Ingestor:
             content_hash=content_hash, chunks=chunks, embed_inputs=embed_inputs,
             summary=summary, source_id=source_id,
         )
-        return IngestResult(path=path, status="updated" if existed else "added", chunks=len(chunks))
+        result = IngestResult(path=path, status="updated" if existed else "added", chunks=len(chunks))
+        log.info("ingested %s: %s (%d chunks)", path, result.status, result.chunks)
+        return result
 
 
 # infrastructure noise we never even try to ingest (vs unsupported docs, which
@@ -112,10 +127,12 @@ def _ignored(path: Path) -> bool:
 
 
 def sync_folder(folder: Path, store: Storage, *, max_chars: int, overlap_chars: int,
-                enricher=None, access: str | None = None) -> SyncReport:
+                enricher=None, access: str | None = None,
+                max_doc_chars: int | None = None) -> SyncReport:
     """Sync one folder: ingest new/changed, remove vanished. Per-file isolation."""
     source_id = store.register_source("folder", str(folder), access=access)
-    ing = Ingestor(store, max_chars=max_chars, overlap_chars=overlap_chars, enricher=enricher)
+    ing = Ingestor(store, max_chars=max_chars, overlap_chars=overlap_chars,
+                   enricher=enricher, max_doc_chars=max_doc_chars)
     report = SyncReport()
     seen: set[str] = set()
     for path in sorted(folder.rglob("*")):

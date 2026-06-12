@@ -91,7 +91,7 @@ def chunk_markdown(md: str, max_chars: int = 3000, overlap_chars: int = 200) -> 
         if buf and len(current) + len(text) + 2 > max_chars:
             tail = current[-overlap_chars:] if overlap_chars else ""
             flush()
-            if tail:
+            if tail and len(tail) + 2 + len(text) <= max_chars:
                 buf = [tail]
         buf_path = path()
         buf.append(text)

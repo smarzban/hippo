@@ -16,17 +16,19 @@ Naming: the project was "knowledgeHub" during design (docs keep that name); the 
 
 ```
 agent.py       build_agent(model) -> Pydantic AI agent, deps=HubDeps(store, role). 4 tools: search/read_document/list_documents/grep.
-               System prompt enforces cite-everything + never-improvise. defer_model_check=True (don't remove: construction must not need API keys)
+               Tool output is framed as ⟦untrusted document data⟧…⟦end⟧ (prompt-injection boundary).
+               System prompt enforces cite-everything + never-improvise + untrusted-content rule. defer_model_check=True (don't remove: construction must not need API keys)
 api.py         build_app(settings, model_override=None): /chat streams Vercel AI protocol via VercelAIAdapter.dispatch_request
                (deps + usage_limits kwargs work on pydantic-ai 1.107). verify_request real: modes none|oidc|iap + bearer tokens every mode.
                require_admin guards POST/DELETE /sources. /me endpoint. /auth/login,/auth/callback,/auth/logout (oidc).
-               /ingest takes repo field: commits to GitHub when configured (status "committed") else direct unversioned ingest.
+               /ingest: size-checked against HIPPO_MAX_UPLOAD_BYTES (413) and HIPPO_MAX_DOC_CHARS (skipped); takes repo field: commits to GitHub when configured (status "committed") else direct unversioned ingest.
                /sources allowlist via HIPPO_SOURCE_ROOTS; DELETE /sources/{id}.
+               Serves ui/dist as static files when HIPPO_UI_DIST is set (single origin, :8000).
 auth.py        AuthenticatedUser(email, role), AuthError, check_domain, IapVerifier (ES256 IAP assertions, injectable key_fetcher),
                validate_google_id_token (claims-only, code-flow tokens). Mode wiring lives in api.py: none|oidc|iap + bearer tokens any mode.
                Role FILTERING lives in storage.py, not here.
-chunking.py    chunk_markdown(): heading-aware, atomic code fences, char-based ~750-token chunks
-cli.py         Typer: sync [--watch] / add / search / reindex / serve / eval / role set/list / token create
+chunking.py    chunk_markdown(): heading-aware, atomic code fences, char-based ~750-token chunks; overlap tail is re-checked against max_chars before prepending
+cli.py         Typer: sync [--watch] / add / search / reindex / serve / eval / backup / role set/list / token create
 config.py      Settings, env prefix HIPPO_ (pydantic-settings)
 db.py          connect() -> sqlite3: schema, WAL, sqlite-vec, FTS5 + sync triggers
 embeddings.py  Embedder protocol; OpenAIEmbedder (default text-embedding-3-small); FakeEmbedder (deterministic, tests/offline)
@@ -36,7 +38,8 @@ ingest.py      Ingestor: parse->hash dedupe->chunk->enrich->embed+index (1 txn/d
                sync_folder() handles deletions + IGNORED_EXTENSIONS/DIRS noise filter
 parsers.py     .md/.txt/.html -> (title, canonical markdown). SUPPORTED set is the gate.
 storage.py     Storage(con, embedder): ALL SQL lives here. upsert/delete/get/list docs,
-               search_hybrid (FTS5 BM25 + vec KNN merged via RRF, k=60), grep (raises ValueError on bad regex).
+               search_hybrid (FTS5 BM25 + vec KNN merged via RRF, k=60), grep (raises ValueError on bad regex/timeout/pattern-too-long).
+               backup(path) via VACUUM INTO for consistent snapshots.
                Users/roles (ensure_user, set_role, list_users), hashed tokens (create_token, resolve_token),
                source access levels ('everyone'|'managers', access=None preserves on re-register), delete_source.
                Role-filtered retrieval: search_hybrid/grep/list_documents/get_document take keyword-only `role` with NO default.
@@ -48,12 +51,15 @@ Vite dev-server proxies /chat,/ingest,/documents,/sources to :8000. Tool parts r
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (~124 tests, <2s, ZERO network — must stay that way)
+uv run pytest                      # full suite (143 tests, <2s, ZERO network — must stay that way)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all registered sources
 uv run hippo serve                 # API :8000
 cd ui && npm run dev               # chat UI :5173
 uv run hippo eval eval/golden.yaml # retrieval recall@k regression gate
 uv run hippo reindex               # re-embed after changing HIPPO_EMBEDDING_MODEL/DIM
+uv run hippo backup <path>         # consistent single-file snapshot via VACUUM INTO
+docker compose up --build          # build + run API+UI on :8000 (set .env first)
+# CI: .github/workflows/ci.yml runs pytest + npm run build on every PR
 ```
 
 Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_MODEL=fake` = offline mode.
@@ -75,21 +81,22 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 - Chat protocol payloads require `"trigger": "submit-message"` (Vercel AI SubmitMessage schema).
 - `chunk_vec` dim is fixed at table creation; changing embedding dim requires `hippo reindex` (drops/recreates table).
 - TDD discipline: failing test first; commit per green step.
+- **grep uses the `regex` module** with a wall-clock `timeout=` (not stdlib `re`) for ReDoS safety; `re` is still used for FTS tokenization. Pattern length is capped at 200 chars; both violations raise `ValueError`.
+- **Tool output is framed as ⟦untrusted document data⟧** — don't strip the delimiters; they are the prompt-injection boundary enforced by the system-prompt "Untrusted content" rule.
 - **Retrieval methods take `role` keyword-only with no default** — a forgotten call site must be a TypeError, never an access-control leak. Same for HubDeps.role.
 
 ## State (2026-06-12)
 
 v1 + review-hardening merged to main: storage/hybrid search, ingestion (folder sync + upload),
 enrichment, agent, API, CLI, React UI, eval harness. PR #2 landed two independent-review passes
-(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 124/124 tests,
+(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 143/143 tests,
 eval 4/4 on seed fixtures, UI builds clean. Roadmap items 1+2 (auth/roles/sources) implemented on
-branch `build/auth-and-sources` (PR pending).
+branch `build/auth-and-sources` (PR pending). Roadmap item 3 (production-readiness: ingestion limits,
+grounding enforcement, grep hardening, chunk/drawer fixes, `hippo backup`, Docker, CI, logging)
+implemented on branch `build/production-readiness` (PR pending).
 
-**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. This round (planning →
-implementing one after another): **auth (Google SSO) + `/sources` allowlist**, **production-readiness**
-(ingestion limits, grounding enforcement, grep timeout, chunk/drawer fixes, `hippo backup`, CI),
-**PDF/Word parsing**, **MCP server**. Then: scale (Postgres+pgvector), Slack, MCP client/connectors,
-settings UI.
+**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. Next: **PDF/Word parsing**,
+**MCP server**. Then: scale (Postgres+pgvector), Slack, MCP client/connectors, settings UI.
 
 **Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown), Slack bot
 (consumes POST /chat), PDF/docx parsers, Postgres+pgvector migration (reimplement Storage), real auth

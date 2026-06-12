@@ -1,0 +1,18 @@
+# Note: .env must set OPENAI_BASE_URL=http://host.docker.internal:11434/v1 when using host Ollama.
+# env_file: .env requires the file to exist — if you have no .env, remove that line.
+services:
+  hippo:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - hippo-data:/app/data
+    environment:
+      - HIPPO_DB_PATH=/app/data/hippo.db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach host Ollama at http://host.docker.internal:11434/v1
+
+volumes:
+  hippo-data:

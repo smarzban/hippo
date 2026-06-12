@@ -33,3 +33,23 @@ def test_positions_sequential():
     md = "# A\n\n" + "\n\n".join("p" * 400 for _ in range(10))
     chunks = chunk_markdown(md, max_chars=900, overlap_chars=0)
     assert [c.position for c in chunks] == list(range(len(chunks)))
+
+
+def test_overlap_never_exceeds_max_chars():
+    # two adjacent near-limit paragraphs; with overlap prepended the second
+    # chunk would blow past max_chars unless the overlap is dropped when it
+    # wouldn't fit (review L5).
+    para_a = "a" * 80
+    para_b = "b" * 80
+    md = f"{para_a}\n\n{para_b}"
+    chunks = chunk_markdown(md, max_chars=100, overlap_chars=50)
+    assert chunks, "expected at least one chunk"
+    assert all(len(c.text) <= 100 for c in chunks), [len(c.text) for c in chunks]
+
+
+def test_overlap_still_applied_when_it_fits():
+    # small blocks under a generous limit: overlap should still carry context
+    md = "\n\n".join(f"sentence number {i} here" for i in range(8))
+    chunks = chunk_markdown(md, max_chars=60, overlap_chars=20)
+    assert all(len(c.text) <= 60 for c in chunks)
+    assert len(chunks) >= 2

@@ -98,3 +98,24 @@ def test_empty_file_skipped_not_ghosted(store, tmp_path):
     report = sync_folder(docs, store, max_chars=3000, overlap_chars=0)
     assert report.skipped == 1 and report.added == 0
     assert store.list_documents(role="admin") == []
+
+
+def test_oversized_document_skipped_not_failed(store):
+    ing = Ingestor(store, max_chars=3000, overlap_chars=0, max_doc_chars=50)
+    r = ing.ingest_text("big.md", "# Big\n\n" + "x" * 200)
+    assert r.status == "skipped" and "max_doc_chars" in (r.error or "")
+    assert store.list_documents(role="admin") == []  # never indexed
+
+
+def test_under_limit_document_still_added(store):
+    ing = Ingestor(store, max_chars=3000, overlap_chars=0, max_doc_chars=10_000)
+    assert ing.ingest_text("ok.md", "# OK\n\nsmall body").status == "added"
+
+
+def test_ingest_emits_info_log(store, caplog):
+    import logging
+    ing = Ingestor(store, max_chars=3000, overlap_chars=0)
+    with caplog.at_level(logging.INFO, logger="hippo.ingest"):
+        ing.ingest_text("logged.md", "# L\n\nsome body text")
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("logged.md" in m and "added" in m for m in msgs)
