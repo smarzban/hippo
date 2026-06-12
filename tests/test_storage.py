@@ -170,3 +170,13 @@ def test_set_role_and_validation(store):
     assert ("new@x.com", "admin") in store.list_users()
     with pytest.raises(ValueError):
         store.set_role("a@x.com", "superuser")
+
+
+def test_token_roundtrip_and_hashing(store):
+    t = store.create_token("a@x.com", name="laptop")
+    assert t.startswith("hk_") and len(t) > 30
+    assert store.resolve_token(t) == "a@x.com"
+    assert store.resolve_token("hk_wrong") is None
+    # only the hash is stored — the raw token must not appear in the db
+    raw = store.con.execute("SELECT token_hash FROM tokens").fetchone()[0]
+    assert t not in raw and t[3:] not in raw

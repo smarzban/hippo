@@ -1,4 +1,6 @@
+import hashlib
 import re
+import secrets
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -216,6 +218,28 @@ class Storage:
     def list_users(self) -> list[tuple[str, str]]:
         with self._lock:
             return list(self.con.execute("SELECT email, role FROM users ORDER BY email"))
+
+    # -- personal access tokens ---------------------------------------------
+
+    def create_token(self, email: str, name: str = "") -> str:
+        """Mint a bearer token for MCP/CLI clients. Only its sha256 is stored."""
+        token = "hk_" + secrets.token_urlsafe(32)
+        self.ensure_user(email)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self._lock, self.con:
+            self.con.execute(
+                "INSERT INTO tokens(token_hash, email, name) VALUES (?,?,?)",
+                (digest, email, name),
+            )
+        return token
+
+    def resolve_token(self, token: str) -> str | None:
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self._lock:
+            row = self.con.execute(
+                "SELECT email FROM tokens WHERE token_hash=?", (digest,)
+            ).fetchone()
+        return row[0] if row else None
 
     # -- search --------------------------------------------------------------
 
