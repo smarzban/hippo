@@ -1,5 +1,6 @@
 import secrets
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
@@ -23,6 +24,7 @@ from .storage import Storage
 class SourceIn(BaseModel):
     kind: str = "folder"
     location: str
+    access: Literal["everyone", "managers"] | None = None
 
 
 def _usage_limits(settings: Settings) -> UsageLimits:
@@ -64,11 +66,11 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     app = FastAPI(title="Hippo")
     app.state.store = store
     # No CORS middleware: the React UI reaches the API same-origin through the Vite
-    # dev-server proxy, so cross-origin access is never needed. A permissive
-    # allow_origins=["*"] would let any website you visit read /documents, /sources,
-    # etc. from a localhost server that has no auth (verify_request is a stub) — an
-    # info-leak with no benefit here. Real auth + an explicit origin policy land with
-    # team deployment (see verify_request).
+    # dev-server proxy (dev) or is served by the same origin (prod), so cross-origin
+    # access is never needed. A permissive allow_origins=["*"] would let any website
+    # read /documents, /sources, etc. cross-origin even though verify_request now
+    # enforces auth in iap/oidc modes — the browser's same-origin policy is an
+    # independent defence layer worth keeping.
 
     iap = iap_verifier or (IapVerifier(settings.iap_audience) if settings.auth_mode == "iap" else None)
 
@@ -204,16 +206,28 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 for i, k, loc, acc in store.list_sources()]
 
     @app.post("/sources")
-    async def add_source(body: SourceIn, _=Depends(verify_request)):
-        folder = Path(body.location)
+    async def add_source(body: SourceIn, user: AuthenticatedUser = Depends(require_admin)):
+        folder = Path(body.location).resolve()  # symlink/.. tricks must not escape the roots
+        roots = settings.source_root_list
+        if settings.auth_mode != "none" and not roots:
+            raise HTTPException(status_code=403,
+                detail="source registration is disabled: no HIPPO_SOURCE_ROOTS configured")
+        if roots and not any(folder == r or r in folder.parents for r in roots):
+            raise HTTPException(status_code=403, detail=f"{folder} is outside HIPPO_SOURCE_ROOTS")
         if not folder.is_dir():
             raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
         report = await run_in_threadpool(
             sync_folder, folder, store, max_chars=settings.chunk_max_chars,
-            overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+            overlap_chars=settings.chunk_overlap_chars, enricher=enricher, access=body.access,
         )
         return {"report": {"added": report.added, "updated": report.updated,
                            "skipped": report.skipped, "removed": report.removed,
                            "failed": report.failed}}
+
+    @app.delete("/sources/{source_id}")
+    async def remove_source(source_id: int, user: AuthenticatedUser = Depends(require_admin)):
+        if not store.delete_source(source_id):
+            raise HTTPException(status_code=404, detail="source not found")
+        return {"deleted": source_id}
 
     return app

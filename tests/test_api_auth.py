@@ -125,3 +125,50 @@ def test_oidc_state_mismatch_rejected(tmp_path):
 def test_oidc_requires_secret_key(tmp_path):
     with pytest.raises(ValueError):
         build_app(_settings(tmp_path, auth_mode="oidc", oidc_client_id="cid"))
+
+
+def _iap_app_with_tokens(tmp_path, **settings_over):
+    s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD,
+                  admin_emails="boss@x.com", **settings_over)
+    app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}))
+    store = app.state.store
+    return (app, store,
+            {"Authorization": f"Bearer {store.create_token('dev@x.com')}"},
+            {"Authorization": f"Bearer {store.create_token('boss@x.com')}"})
+
+
+def test_sources_admin_only_and_allowlisted(tmp_path):
+    docs = tmp_path / "roots" / "team"
+    docs.mkdir(parents=True)
+    (docs / "a.md").write_text("# A\n\nalpha")
+    app, store, dev, boss = _iap_app_with_tokens(tmp_path, source_roots=str(tmp_path / "roots"))
+    c = TestClient(app)
+    body = {"location": str(docs), "access": "everyone"}
+    assert c.post("/sources", json=body, headers=dev).status_code == 403   # not admin
+    outside = {"location": str(tmp_path), "access": "everyone"}            # parent of root
+    assert c.post("/sources", json=outside, headers=boss).status_code == 403
+    r = c.post("/sources", json=body, headers=boss)
+    assert r.status_code == 200 and r.json()["report"]["added"] == 1
+    listed = c.get("/sources", headers=dev).json()
+    assert listed[0]["access"] == "everyone"
+
+
+def test_sources_registration_refused_without_roots_when_auth_on(tmp_path):
+    app, _, _, boss = _iap_app_with_tokens(tmp_path)  # no source_roots configured
+    c = TestClient(app)
+    r = c.post("/sources", json={"location": str(tmp_path)}, headers=boss)
+    assert r.status_code == 403
+
+
+def test_delete_source_admin_only(tmp_path):
+    docs = tmp_path / "roots" / "m"
+    docs.mkdir(parents=True)
+    (docs / "s.md").write_text("# S\n\nsecret")
+    app, store, dev, boss = _iap_app_with_tokens(tmp_path, source_roots=str(tmp_path / "roots"))
+    c = TestClient(app)
+    c.post("/sources", json={"location": str(docs), "access": "managers"}, headers=boss)
+    sid = c.get("/sources", headers=boss).json()[0]["id"]
+    assert c.delete(f"/sources/{sid}", headers=dev).status_code == 403
+    assert c.delete(f"/sources/{sid}", headers=boss).status_code == 200
+    assert c.get("/sources", headers=boss).json() == []
+    assert c.delete(f"/sources/{sid}", headers=boss).status_code == 404
