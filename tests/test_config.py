@@ -47,3 +47,10 @@ def test_source_roots_colon_separated(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     s = Settings(_env_file=None, source_roots=f"{a}:{b}")
     assert s.source_root_list == [a.resolve(), b.resolve()]
+
+
+def test_auth_mode_typo_rejected():
+    import pytest
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, auth_mode="oidcc")

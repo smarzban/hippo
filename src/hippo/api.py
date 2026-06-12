@@ -76,6 +76,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     # enforces auth in iap/oidc modes — the browser's same-origin policy is an
     # independent defence layer worth keeping.
 
+    if settings.auth_mode == "iap" and iap_verifier is None and not settings.iap_audience:
+        raise ValueError("HIPPO_IAP_AUDIENCE is required when HIPPO_AUTH_MODE=iap")
     iap = iap_verifier or (IapVerifier(settings.iap_audience) if settings.auth_mode == "iap" else None)
 
     def _user_for(email: str) -> AuthenticatedUser:

@@ -224,6 +224,11 @@ def test_ingest_managers_repo_unconfigured_400(tmp_path):
     assert r.status_code == 400
 
 
+def test_iap_mode_requires_audience(tmp_path):
+    with pytest.raises(ValueError):
+        build_app(_settings(tmp_path, auth_mode="iap"))
+
+
 def test_sources_listing_hides_manager_sources_from_developers(tmp_path):
     app, store, dev, boss = _iap_app_with_tokens(tmp_path)
     store.register_source("folder", "/r/team")

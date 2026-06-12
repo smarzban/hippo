@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,7 +23,7 @@ class Settings(BaseSettings):
     search_top_k: int = 8
 
     # --- auth (spec §1) ---
-    auth_mode: str = "none"  # none | oidc | iap
+    auth_mode: Literal["none", "oidc", "iap"] = "none"
     allowed_domain: str = ""  # e.g. superbalist.com; empty = any domain
     admin_emails: str = ""  # comma-separated bootstrap admins (always admin)
     secret_key: str = ""  # session-cookie signing; required in oidc mode
