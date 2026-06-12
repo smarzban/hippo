@@ -4,19 +4,20 @@ version = "0.1.0"
 description = "Agentic hippo knowledge base: ingest docs, query via chat agent"
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic-ai",
-    "pydantic-settings",
-    "fastapi",
-    "uvicorn",
-    "sqlite-vec",
-    "typer",
-    "watchfiles",
-    "markdownify",
-    "pyyaml",
-    "python-multipart",
+    "pydantic-ai>=1.107.0",
+    "pydantic-settings>=2.14.1",
+    "fastapi>=0.136.3",
+    "uvicorn>=0.49.0",
+    "sqlite-vec>=0.1.9",
+    "typer>=0.25.1",
+    "watchfiles>=1.2.0",
+    "markdownify>=1.2.2",
+    "pyyaml>=6.0.3",
+    "python-multipart>=0.0.32",
     "pyjwt[crypto]>=2.13.0",
     "itsdangerous>=2.2.0",
     "httpx>=0.28.1",
+    "regex>=2024.0.0",
 ]
 
 [project.scripts]

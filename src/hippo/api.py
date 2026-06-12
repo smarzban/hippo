@@ -1,12 +1,17 @@
 import hashlib
+import logging
 import re
 import secrets
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlencode
 
+log = logging.getLogger("hippo.auth")
+
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from pydantic_ai.usage import UsageLimits
@@ -76,6 +81,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     ingestor = Ingestor(
         store, max_chars=settings.chunk_max_chars,
         overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+        max_doc_chars=settings.max_doc_chars,
     )
     agent = build_agent(model_override or settings.chat_model)
 
@@ -100,6 +106,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         try:
             check_domain(email, settings.allowed_domain)
         except AuthError as e:
+            log.warning("auth denied: domain not allowed for %s", email)
             raise HTTPException(status_code=403, detail=str(e))
         role = store.ensure_user(email)
         if email in settings.admin_email_list:
@@ -112,6 +119,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if authz.lower().startswith("bearer "):
             email = store.resolve_token(authz[7:].strip())
             if email is None:
+                log.warning("auth denied: invalid bearer token")
                 raise HTTPException(status_code=401, detail="invalid token")
             return _user_for(email)
         if settings.auth_mode == "none":
@@ -119,13 +127,16 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if settings.auth_mode == "iap":
             assertion = request.headers.get("x-goog-iap-jwt-assertion", "")
             if not assertion:
+                log.warning("auth denied: missing IAP assertion")
                 raise HTTPException(status_code=401, detail="missing IAP assertion")
             try:
                 return _user_for(iap.verify(assertion))
             except AuthError as e:
+                log.warning("auth denied (iap): %s", e)
                 raise HTTPException(status_code=401, detail=str(e))
         email = request.session.get("email", "")  # oidc: session cookie (Task 10)
         if not email:
+            log.warning("auth denied: no session")
             raise HTTPException(status_code=401, detail="not signed in")
         return _user_for(email)
 
@@ -200,14 +211,22 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         )
 
     @app.post("/ingest")
-    async def ingest(file: UploadFile, repo: str = Form("team"),
+    async def ingest(request: Request, file: UploadFile, repo: str = Form("team"),
                      user: AuthenticatedUser = Depends(verify_request)):
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > settings.max_upload_bytes:
+            raise HTTPException(status_code=413, detail="file too large")
         raw_bytes = await file.read()
+        if len(raw_bytes) > settings.max_upload_bytes:
+            raise HTTPException(status_code=413, detail="file too large")
         name = _safe_filename(file.filename or "upload.md")
         if repo == "managers" and user.role not in ("manager", "admin"):
             raise HTTPException(status_code=403, detail="managers repo requires the manager role")
         target = settings.github_managers_repo if repo == "managers" else settings.github_docs_repo
         if settings.github_token and target:
+            text = raw_bytes.decode("utf-8", errors="replace")
+            if settings.max_doc_chars and len(text) > settings.max_doc_chars:
+                raise HTTPException(status_code=413, detail="document too large")
             gh = github_factory(target)
             # Content-hash-qualified path: mirrors ingest.py's L4 fix so two different
             # docs sharing a filename coexist instead of silently overwriting; an
@@ -268,6 +287,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         report = await run_in_threadpool(
             sync_folder, folder, store, max_chars=settings.chunk_max_chars,
             overlap_chars=settings.chunk_overlap_chars, enricher=enricher, access=body.access,
+            max_doc_chars=settings.max_doc_chars,
         )
         return {"report": {"added": report.added, "updated": report.updated,
                            "skipped": report.skipped, "removed": report.removed,
@@ -278,5 +298,26 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if not store.delete_source(source_id):
             raise HTTPException(status_code=404, detail="source not found")
         return {"deleted": source_id}
+
+    # Serve the built React UI (single-origin with the API) when configured.
+    # API routes above take precedence; the catch-all only handles unmatched
+    # (SPA) paths. The Vite dev server + proxy remains the dev workflow.
+    if settings.ui_dist:
+        dist = Path(settings.ui_dist)
+        if dist.is_dir():
+            assets = dist / "assets"
+            if assets.is_dir():
+                app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
+            index = dist / "index.html"
+
+            RESERVED = ("auth", "chat", "ingest", "documents", "sources", "me",
+                        "health", "openapi.json", "docs", "redoc", "assets")
+
+            @app.get("/{full_path:path}")
+            async def spa(full_path: str):
+                first = full_path.split("/", 1)[0]
+                if first in RESERVED:
+                    raise HTTPException(status_code=404, detail="not found")
+                return FileResponse(str(index))
 
     return app
