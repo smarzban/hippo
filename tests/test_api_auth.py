@@ -377,3 +377,13 @@ def test_no_static_ui_when_unset(tmp_path):
     # with no UI configured, an unknown path is a normal 404 (no catch-all)
     assert c.get("/some/client/route").status_code == 404
     assert c.get("/health").json() == {"status": "ok"}
+
+
+def test_ingest_docx_via_api_fallback(tmp_path):
+    from tests.test_parsers import _minimal_docx
+    app = build_app(_settings(tmp_path))  # none mode, no github
+    c = TestClient(app)
+    r = c.post("/ingest", files={"file": ("Report.docx", _minimal_docx("alpha bravo charlie"))})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "added" and body["versioned"] is False

@@ -5,6 +5,7 @@ from hippo.embeddings import FakeEmbedder
 from hippo.ingest import Ingestor, sync_folder
 from hippo.parsers import parse_file
 from hippo.storage import Storage
+from tests.test_parsers import _minimal_docx
 
 
 @pytest.fixture
@@ -119,3 +120,16 @@ def test_ingest_emits_info_log(store, caplog):
         ing.ingest_text("logged.md", "# L\n\nsome body text")
     msgs = [r.getMessage() for r in caplog.records]
     assert any("logged.md" in m and "added" in m for m in msgs)
+
+
+def test_ingest_bytes_docx_indexes_and_searches(store):
+    ing = Ingestor(store, max_chars=3000, overlap_chars=0)
+    r = ing.ingest_bytes("Plan.docx", _minimal_docx("pubsub setup instructions here"), suffix=".docx")
+    assert r.status == "added" and r.chunks >= 1
+    hits = store.search_hybrid("pubsub setup", top_k=3, role="admin")
+    assert hits and "pubsub" in hits[0].text.lower()
+
+
+def test_ingest_text_still_works_via_delegate(store):
+    ing = Ingestor(store, max_chars=3000, overlap_chars=0)
+    assert ing.ingest_text("n.md", "# N\n\nhello body").status == "added"

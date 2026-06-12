@@ -210,7 +210,7 @@ export default function App() {
             <input
               type="file"
               hidden
-              accept=".md,.markdown,.txt,.html,.htm"
+              accept=".md,.markdown,.txt,.html,.htm,.docx"
               onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
             />
           </label>

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .chunking import chunk_markdown
-from .parsers import SUPPORTED, parse_content, parse_file
+from .parsers import SUPPORTED, parse_bytes, parse_content, parse_file
 from .storage import Storage
 
 log = logging.getLogger("hippo.ingest")
@@ -51,12 +51,14 @@ class Ingestor:
     """The one pipeline: parse -> hash/dedupe -> chunk -> (enrich) -> embed+index."""
 
     def __init__(self, store: Storage, *, max_chars: int, overlap_chars: int,
-                 enricher=None, max_doc_chars: int | None = None):
+                 enricher=None, max_doc_chars: int | None = None,
+                 max_decompressed_bytes: int | None = None):
         self.store = store
         self.max_chars = max_chars
         self.overlap_chars = overlap_chars
         self.enricher = enricher  # Task 9; None = enrichment off
         self.max_doc_chars = max_doc_chars
+        self.max_decompressed_bytes = max_decompressed_bytes
 
     def ingest_file(self, path: Path, *, source_type: str, source_id: int | None = None) -> IngestResult:
         try:
@@ -66,20 +68,25 @@ class Ingestor:
             log.warning("failed %s: %s", path, e)
             return IngestResult(path=str(path), status="failed", error=str(e))
 
-    def ingest_text(self, name: str, raw: str, *, suffix: str = ".md", source_type: str = "upload") -> IngestResult:
+    def ingest_bytes(self, name: str, data: bytes, *, suffix: str = ".md",
+                     source_type: str = "upload") -> IngestResult:
         try:
             if suffix.lower() not in SUPPORTED:
                 raise ValueError(f"unsupported file type: {suffix}")
-            title, md = parse_content(name, raw, suffix)
-            # Uploads have no stable source path: two different files both named
-            # "notes.md" would collide on the UNIQUE documents.path and silently
-            # overwrite. Qualify with a short content hash so distinct contents
-            # coexist, while an identical re-upload still dedupes via is_unchanged.
+            title, md = parse_bytes(name, data, suffix,
+                                    max_decompressed=self.max_decompressed_bytes)
+            # Uploads have no stable source path: content-hash-qualify so two
+            # different files sharing a name coexist (mirrors the folder path).
             digest = hashlib.sha256(md.encode()).hexdigest()[:8]
-            return self._index(f"upload/{digest}-{name}", title, md, source_type=source_type, source_id=None)
+            return self._index(f"upload/{digest}-{name}", title, md,
+                               source_type=source_type, source_id=None)
         except Exception as e:
             log.warning("failed %s: %s", name, e)
             return IngestResult(path=name, status="failed", error=str(e))
+
+    def ingest_text(self, name: str, raw: str, *, suffix: str = ".md",
+                    source_type: str = "upload") -> IngestResult:
+        return self.ingest_bytes(name, raw.encode("utf-8"), suffix=suffix, source_type=source_type)
 
     def _index(self, path: str, title: str, md: str, *, source_type: str, source_id: int | None) -> IngestResult:
         if not md.strip():
