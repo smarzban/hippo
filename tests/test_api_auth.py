@@ -387,3 +387,83 @@ def test_ingest_docx_via_api_fallback(tmp_path):
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "added" and body["versioned"] is False
+
+
+def test_mcp_requires_token(tmp_path):
+    app = build_app(_settings(tmp_path))  # mcp_enabled defaults True; none-mode
+    with TestClient(app) as c:
+        # no Authorization header -> 401 before MCP processing
+        assert c.post("/mcp", json={"jsonrpc": "2.0", "method": "ping", "id": 1}).status_code == 401
+        assert c.post("/mcp", headers={"Authorization": "Bearer hk_bogus"},
+                      json={"jsonrpc": "2.0", "method": "ping", "id": 1}).status_code == 401
+
+
+def test_mcp_valid_token_full_handshake(tmp_path):
+    """A valid token must pass the gate AND drive a working MCP handshake — i.e.
+    transport-security (DNS-rebinding host check) must not 421 the request behind
+    an arbitrary Host. initialize -> tools/list returns Hippo's four tools."""
+    app = build_app(_settings(tmp_path))
+    store = app.state.store
+    token = store.create_token("dev@x.com")
+    hdr = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    with TestClient(app) as c:
+        init = c.post("/mcp/", headers=hdr, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "t", "version": "1"}}})
+        assert init.status_code == 200  # not 401 (auth) and not 421 (host check)
+        sid = init.headers.get("mcp-session-id")
+        h2 = dict(hdr)
+        if sid:
+            h2["mcp-session-id"] = sid
+        listed = c.post("/mcp/", headers=h2,
+                        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        assert listed.status_code == 200
+        names = {t["name"] for t in listed.json()["result"]["tools"]}
+        assert names == {"search", "read_document", "list_documents", "grep"}
+
+
+def test_mcp_disabled_not_mounted(tmp_path):
+    app = build_app(_settings(tmp_path, mcp_enabled=False))
+    with TestClient(app) as c:
+        assert c.post("/mcp", json={}).status_code == 404
+
+
+def test_mcp_rejects_out_of_domain_token(tmp_path):
+    s = _settings(tmp_path, allowed_domain="x.com")
+    app = build_app(s)
+    store = app.state.store
+    good = store.create_token("dev@x.com")
+    bad = store.create_token("contractor@gmail.com")  # token exists but wrong domain
+    with TestClient(app) as c:
+        # out-of-domain token is rejected by the same gate that protects /me
+        assert c.post("/mcp/", headers={"Authorization": f"Bearer {bad}",
+            "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                             "clientInfo": {"name": "t", "version": "1"}}}).status_code == 401
+        # in-domain token still works (full handshake)
+        init = c.post("/mcp/", headers={"Authorization": f"Bearer {good}",
+            "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                             "clientInfo": {"name": "t", "version": "1"}}})
+        assert init.status_code == 200
+
+
+def test_mcp_revoked_token_rejected(tmp_path):
+    app = build_app(_settings(tmp_path))
+    store = app.state.store
+    tok = store.create_token("dev@x.com")
+    tid = store.list_tokens("dev@x.com")[0][0]
+    assert store.revoke_token(tid, "dev@x.com") is True
+    with TestClient(app) as c:
+        assert c.post("/mcp/", headers={"Authorization": f"Bearer {tok}",
+            "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                             "clientInfo": {"name": "t", "version": "1"}}}).status_code == 401
