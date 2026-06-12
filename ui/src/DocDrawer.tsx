@@ -22,7 +22,10 @@ export function DocDrawer({
     setLoading(true);
     setDoc(null);
     fetch(`/documents/${docId}`)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      })
       .then((d) => alive && (setDoc(d), setLoading(false)))
       .catch(() => alive && setLoading(false));
     return () => {

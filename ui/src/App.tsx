@@ -106,6 +106,11 @@ function AssistantText({
           </ol>
         </div>
       )}
+      {sources.length === 0 && processed.trim().length > 120 && (
+        <p className="no-sources" title="Hippo should answer only from indexed docs with citations.">
+          ⚠ No sources cited — verify independently.
+        </p>
+      )}
     </div>
   );
 }
