@@ -32,7 +32,7 @@ Voice:
 @dataclass
 class HubDeps:
     store: Storage
-    role: str = "admin"  # developer | manager | admin — filters every tool's retrieval
+    role: str  # developer | manager | admin — filters every tool's retrieval
 
 
 def build_agent(model) -> Agent[HubDeps, str]:
