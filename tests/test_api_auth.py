@@ -398,20 +398,33 @@ def test_mcp_requires_token(tmp_path):
                       json={"jsonrpc": "2.0", "method": "ping", "id": 1}).status_code == 401
 
 
-def test_mcp_valid_token_passes_auth(tmp_path):
+def test_mcp_valid_token_full_handshake(tmp_path):
+    """A valid token must pass the gate AND drive a working MCP handshake — i.e.
+    transport-security (DNS-rebinding host check) must not 421 the request behind
+    an arbitrary Host. initialize -> tools/list returns Hippo's four tools."""
     app = build_app(_settings(tmp_path))
     store = app.state.store
     token = store.create_token("dev@x.com")
+    hdr = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
     with TestClient(app) as c:
-        r = c.post("/mcp", headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json, text/event-stream",
-            "Content-Type": "application/json",
-        }, json={"jsonrpc": "2.0", "method": "initialize", "id": 1,
-                 "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                            "clientInfo": {"name": "t", "version": "1"}}})
-        # auth passed -> MCP handled it (NOT 401). Accept any non-401 (200/4xx from MCP).
-        assert r.status_code != 401
+        init = c.post("/mcp/", headers=hdr, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "t", "version": "1"}}})
+        assert init.status_code == 200  # not 401 (auth) and not 421 (host check)
+        sid = init.headers.get("mcp-session-id")
+        h2 = dict(hdr)
+        if sid:
+            h2["mcp-session-id"] = sid
+        listed = c.post("/mcp/", headers=h2,
+                        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        assert listed.status_code == 200
+        names = {t["name"] for t in listed.json()["result"]["tools"]}
+        assert names == {"search", "read_document", "list_documents", "grep"}
 
 
 def test_mcp_disabled_not_mounted(tmp_path):

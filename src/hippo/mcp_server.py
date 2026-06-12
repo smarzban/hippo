@@ -57,12 +57,20 @@ def build_mcp_server(store: Storage, *, require_auth: bool):
     means a missing role is a hard error (the middleware must have set it); False
     (stdio/local) defaults to the single local admin user."""
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
 
     mcp = FastMCP(
         "hippo",
         stateless_http=True,
         json_response=True,
         streamable_http_path="/",
+        # DNS-rebinding protection guards browser-to-localhost attacks; it rejects
+        # any Host the server wasn't told about, which would 421 every real call
+        # behind a reverse proxy / custom domain (hippo.superbalist.com, the
+        # container, tests). Hippo's own bearer-token gate authenticates every
+        # /mcp request — no browser holds a token — so the rebinding defense is
+        # redundant here. Disable it so MCP works behind any host.
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 
     def role() -> str:
