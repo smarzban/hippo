@@ -93,6 +93,8 @@ claude mcp add --transport http hippo https://hippo.example.com/mcp \
   --header "Authorization: Bearer hk_..."
 ```
 
+The endpoint is served at `/mcp/`; a request to `/mcp` (no trailing slash) is redirected there, which MCP clients follow automatically.
+
 Claude Desktop users: use [`mcp-remote`](https://github.com/geelen/mcp-remote) to inject the header. claude.ai web connectors are not yet supported (need MCP OAuth — planned).
 
 **Local single-user:** `hippo mcp` runs an MCP server over stdio (as admin — no token needed). Point a local stdio MCP client at it:
