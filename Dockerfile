@@ -17,6 +17,14 @@ COPY eval/ ./eval/
 RUN uv sync --no-dev --frozen
 COPY --from=ui-build /ui/dist ./ui/dist
 ENV HIPPO_UI_DIST=/app/ui/dist
+
+# Run as a non-root user. Pre-create /app/data and chown /app so a mounted
+# named volume inherits appuser ownership and the SQLite db stays writable.
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/data \
+    && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8000
 # --no-sync: the image is already synced at build time; skip uv's runtime
 # re-sync so startup is fast and the container needs no build tooling at launch.

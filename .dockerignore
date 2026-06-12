@@ -1,4 +1,6 @@
 .venv
+.env
+.env.*
 **/node_modules
 ui/dist
 *.db
