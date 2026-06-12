@@ -326,6 +326,21 @@ def test_grep_normal_pattern_still_matches(store):
     assert hits and hits[0].path == "doc.md"
 
 
+def test_grep_whole_operation_time_budget(store, monkeypatch):
+    import time
+    from hippo import storage
+    monkeypatch.setattr(storage, "GREP_TIMEOUT_S", 0.3)
+    # many chunks that each backtrack a little; aggregate must stay bounded by the
+    # whole-operation budget, not budget-per-chunk.
+    for i in range(20):
+        _add_doc(store, f"d{i}.md", "a" * 35 + "!")
+    t0 = time.monotonic()
+    import pytest
+    with pytest.raises(ValueError, match="too long"):
+        store.grep(r"(a|aa)+$", role="admin")
+    assert time.monotonic() - t0 < 1.5  # ~0.3s budget, not 20×0.3
+
+
 def test_backup_produces_readable_snapshot(store, tmp_path):
     from hippo.db import connect
     from hippo.embeddings import FakeEmbedder

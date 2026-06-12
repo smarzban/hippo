@@ -1,12 +1,13 @@
 import hashlib
 import re
-import regex
 import secrets
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import regex
 import sqlite_vec
 
 from .chunking import Chunk
@@ -460,11 +461,15 @@ class Storage:
                    LEFT JOIN sources s ON s.id = d.source_id"""
             ).fetchall()
         hits: list[SearchHit] = []
+        deadline = time.monotonic() + GREP_TIMEOUT_S
         for row in rows:
             if not _visible(role, row[6]):
                 continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError(f"pattern took too long (>{GREP_TIMEOUT_S}s)")
             try:
-                matched = rx.search(row[5], timeout=GREP_TIMEOUT_S)
+                matched = rx.search(row[5], timeout=remaining)
             except TimeoutError as e:
                 raise ValueError(f"pattern took too long (>{GREP_TIMEOUT_S}s)") from e
             if matched:

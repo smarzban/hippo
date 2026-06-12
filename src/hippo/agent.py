@@ -41,8 +41,11 @@ Voice:
 
 def _as_data(text: str) -> str:
     """Frame document text as untrusted data so the model can't be hijacked by
-    instructions embedded in documents (prompt-injection mitigation)."""
-    return f"⟦untrusted document data⟧\n{text}\n⟦end⟧"
+    instructions embedded in documents (prompt-injection mitigation). The marker
+    glyphs ⟦ ⟧ are stripped from the body so a document cannot forge a closing
+    marker and smuggle text outside the envelope."""
+    body = text.replace("⟦", "[").replace("⟧", "]")
+    return f"⟦untrusted document data⟧\n{body}\n⟦end⟧"
 
 
 @dataclass
