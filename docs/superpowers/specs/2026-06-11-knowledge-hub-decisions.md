@@ -80,7 +80,7 @@ Each entry: the decision, the options considered, and the reasoning. Format loos
 
 **Why:** Dedicated vector DBs earn their keep at millions of vectors under concurrent load — this corpus is thousands of documents / tens-of-thousands of chunks, where SQLite's exact brute-force scan is milliseconds and Qdrant's HNSW approximation solves a problem we don't have. Embedded storage means zero infrastructure, backup-by-file-copy, and keyword + vector + metadata in one query layer (vs. reconciling IDs across two stores). FTS5 covers proper nouns/codenames ("polly", "telegram") where embeddings are weak.
 
-**Known limits, accepted:** single-writer (WAL mode handles v1's one-ingester-many-readers); the exit ramp is reimplementing the storage interface on Postgres + pgvector when team-scale concurrency demands it. Embedding model is stamped per vector; `reindex` re-embeds on model swaps.
+**Known limits, accepted:** single-writer (WAL mode handles v1's one-ingester-many-readers; in-process, Storage serializes its shared connection with a lock); the exit ramp is reimplementing the storage interface on Postgres + pgvector when team-scale concurrency demands it. The embedding model is recorded once per database (a `meta` row set on first ingest and checked on every subsequent ingest — *not* per vector); a same-dimension model swap is refused until `reindex` re-embeds and re-stamps.
 
 ---
 
@@ -103,12 +103,12 @@ Each entry: the decision, the options considered, and the reasoning. Format loos
 
 **Decision:** No hard provider dependency. Chat model, enrichment model (cheap), and embedding model are all config. Default embeddings: OpenAI `text-embedding-3-small` (cheap, ubiquitous), swappable to Voyage/Ollama.
 
-**Why:** User requirement. Pydantic AI's model abstraction makes the chat model a config string; the embedding layer records the model per vector so swaps are a `reindex`, not a migration crisis. Cost note: provider lock-in is avoided at the price of not using provider-exclusive features (e.g. Anthropic server-side tools); acceptable for this system's needs.
+**Why:** User requirement. Pydantic AI's model abstraction makes the chat model a config string; the database records its embedding model once (a `meta` row checked on every ingest) so a model swap is a deliberate `reindex`, not a silent mixing of incompatible vector spaces. Cost note: provider lock-in is avoided at the price of not using provider-exclusive features (e.g. Anthropic server-side tools); acceptable for this system's needs.
 
 ---
 
 ## D9. Honesty over coverage
 
-**Decision:** The agent answers only from retrieved content, cites every claim (document + section), and says "the knowledge base doesn't cover this" rather than improvising. Tool-call cap (~15) with honest partial answers at the limit.
+**Decision:** The agent answers only from retrieved content, cites every claim (document + section), and says "the knowledge base doesn't cover this" rather than improvising. A tool-call cap (~15, via `tool_calls_limit`) bounds runaway research; on hitting it the run stops and the UI shows an honest "reached my research limit" message rather than fabricating an answer. (A graceful mid-answer wrap-up turn — re-running once with tools disabled to summarize what was found — is a noted future enhancement; today the limit surfaces as an explicit message, not a partial answer.)
 
 **Why:** A knowledge hub people don't trust is worthless. Structural citations (provenance flows from the storage schema through tools to the UI) are the core trust feature; refusing to free-style from general knowledge is what distinguishes "team brain" from "chatbot with vibes".

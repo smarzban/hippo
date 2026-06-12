@@ -65,7 +65,12 @@ class Ingestor:
             if suffix.lower() not in SUPPORTED:
                 raise ValueError(f"unsupported file type: {suffix}")
             title, md = parse_content(name, raw, suffix)
-            return self._index(f"upload/{name}", title, md, source_type=source_type, source_id=None)
+            # Uploads have no stable source path: two different files both named
+            # "notes.md" would collide on the UNIQUE documents.path and silently
+            # overwrite. Qualify with a short content hash so distinct contents
+            # coexist, while an identical re-upload still dedupes via is_unchanged.
+            digest = hashlib.sha256(md.encode()).hexdigest()[:8]
+            return self._index(f"upload/{digest}-{name}", title, md, source_type=source_type, source_id=None)
         except Exception as e:
             return IngestResult(path=name, status="failed", error=str(e))
 
@@ -73,9 +78,7 @@ class Ingestor:
         if not md.strip():
             return IngestResult(path=path, status="skipped")  # no ghost documents
         content_hash = hashlib.sha256(md.encode()).hexdigest()
-        existed = self.store.con.execute(
-            "SELECT 1 FROM documents WHERE path=?", (path,)
-        ).fetchone()
+        existed = self.store.document_exists(path)  # via Storage; no SQL outside storage.py
         if self.store.is_unchanged(path, content_hash):
             return IngestResult(path=path, status="skipped")
 

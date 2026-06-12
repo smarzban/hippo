@@ -96,6 +96,17 @@ def test_ingest_with_enrichment_enabled(tmp_path, monkeypatch):
     assert r.json()["report"] == {"added": 1, "updated": 0, "skipped": 0, "removed": 0, "failed": 0}
 
 
+def test_usage_limits_caps_tool_calls_not_just_requests():
+    """M4: the cap must bound tool calls (the documented ~15 knob), with a
+    generous request_limit backstop — not the other way around."""
+    from hippo.api import _usage_limits
+
+    s = Settings(_env_file=None, max_tool_calls=7)
+    ul = _usage_limits(s)
+    assert ul.tool_calls_limit == 7
+    assert ul.request_limit is not None and ul.request_limit > 7
+
+
 def test_ingest_rejects_unsupported_type(client):
     r = client.post("/ingest", files={"file": ("data.bin", b"\x00\x01", "application/octet-stream")})
     assert r.status_code == 422

@@ -37,7 +37,7 @@ Vite dev-server proxies /chat,/ingest,/documents,/sources to :8000. Tool parts r
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (~46 tests, <2s, ZERO network — must stay that way)
+uv run pytest                      # full suite (~57 tests, <2s, ZERO network — must stay that way)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all registered sources
 uv run hippo serve                 # API :8000
 cd ui && npm run dev               # chat UI :5173
@@ -51,8 +51,13 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 
 - **Tests never hit the network.** Use `FakeEmbedder` + pydantic-ai `TestModel`/`FunctionModel`; agent/api/enrich
   tests set `pydantic_ai.models.ALLOW_MODEL_REQUESTS = False`. Keep it.
-- **No SQL outside storage.py** (cli.py `reindex` is the one tolerated exception). The agent/API/ingest call the
-  Storage interface — this is the Postgres exit ramp; don't erode it.
+- **No SQL outside storage.py** (now zero exceptions — `reindex` moved into `Storage.reindex`). The agent/API/ingest
+  call the Storage interface — this is the Postgres exit ramp; don't erode it.
+- **One `Storage` per connection.** `Storage` serializes its shared sqlite connection with a `threading.Lock`
+  (event loop + `run_in_threadpool` workers share one `con`); network embedding stays outside the lock. Two
+  `Storage` instances on one connection would each have their own lock — don't.
+- **Embedding model is stamped** in `meta` on first ingest; ingesting with a different model is refused until
+  `hippo reindex`. `reindex` embeds everything before swapping `chunk_vec`, so a failure leaves the index intact.
 - Test dbs must NOT live inside folders that get synced (sqlite WAL files pollute rglob) — use a separate tmp dir
   for the db (see tests/test_ingest.py fixture).
 - `Agent(...)` constructions need `defer_model_check=True` or import-time crashes without API keys.
@@ -63,7 +68,7 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 ## State (2026-06-11)
 
 v1 complete and merged to main: storage/hybrid search, ingestion (folder sync + upload), enrichment,
-agent, API, CLI, React UI, eval harness. 46/46 tests, eval 4/4 on seed fixtures, UI builds clean.
+agent, API, CLI, React UI, eval harness. 57/57 tests, eval 4/4 on seed fixtures, UI builds clean.
 
 **Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown), Slack bot
 (consumes POST /chat), PDF/docx parsers, Postgres+pgvector migration (reimplement Storage), real auth

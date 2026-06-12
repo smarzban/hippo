@@ -2,7 +2,6 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from pydantic_ai.usage import UsageLimits
@@ -27,6 +26,16 @@ class SourceIn(BaseModel):
     location: str
 
 
+def _usage_limits(settings: Settings) -> UsageLimits:
+    """Cap the agent's *tool calls* (ADR D9's ~15 research budget). request_limit
+    bounds model requests, not tool calls — one request can emit several — so it
+    only serves as a generous backstop here."""
+    return UsageLimits(
+        tool_calls_limit=settings.max_tool_calls,
+        request_limit=settings.max_tool_calls + 5,
+    )
+
+
 def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
     settings = settings or Settings()
     con = connect(settings.db_path, embedding_dim=settings.embedding_dim)
@@ -41,9 +50,12 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
     deps = HubDeps(store=store)
 
     app = FastAPI(title="Hippo")
-    app.add_middleware(
-        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
-    )
+    # No CORS middleware: the React UI reaches the API same-origin through the Vite
+    # dev-server proxy, so cross-origin access is never needed. A permissive
+    # allow_origins=["*"] would let any website you visit read /documents, /sources,
+    # etc. from a localhost server that has no auth (verify_request is a stub) — an
+    # info-leak with no benefit here. Real auth + an explicit origin policy land with
+    # team deployment (see verify_request).
 
     @app.get("/health")
     async def health(_=Depends(verify_request)):
@@ -51,9 +63,8 @@ def build_app(settings: Settings | None = None, model_override=None) -> FastAPI:
 
     @app.post("/chat")
     async def chat(request: Request, _=Depends(verify_request)):
-        usage_limits = UsageLimits(request_limit=settings.max_tool_calls + 1)
         return await VercelAIAdapter.dispatch_request(
-            request, agent=agent, deps=deps, usage_limits=usage_limits
+            request, agent=agent, deps=deps, usage_limits=_usage_limits(settings)
         )
 
     @app.post("/ingest")
