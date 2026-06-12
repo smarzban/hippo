@@ -65,7 +65,7 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
     enricher = ing.enricher
 
     def run_all() -> None:
-        folders = [Path(folder)] if folder else [Path(loc) for _, kind, loc, _access in store.list_sources() if kind == "folder"]
+        folders = [Path(folder)] if folder else [Path(loc) for _, kind, loc, _access in store.list_sources(role="admin") if kind == "folder"]
         if not folders:
             typer.echo("no sources registered; run: hippo sync <folder>")
             raise typer.Exit(1)
@@ -80,7 +80,7 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
     if watch:
         from watchfiles import watch as fswatch
 
-        targets = [folder] if folder else [loc for _, kind, loc, _access in store.list_sources() if kind == "folder"]
+        targets = [folder] if folder else [loc for _, kind, loc, _access in store.list_sources(role="admin") if kind == "folder"]
         typer.echo(f"watching {targets} (ctrl-c to stop)")
         for _changes in fswatch(*targets):
             run_all()

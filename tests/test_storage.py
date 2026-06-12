@@ -192,12 +192,12 @@ def test_token_roundtrip_and_hashing(store):
 
 def test_register_source_with_access_and_update(store):
     sid = store.register_source("folder", "/r/team")
-    assert (sid, "folder", "/r/team", "everyone") in store.list_sources()
+    assert (sid, "folder", "/r/team", "everyone") in store.list_sources(role="admin")
     sid2 = store.register_source("folder", "/r/mgr", access="managers")
-    assert (sid2, "folder", "/r/mgr", "managers") in store.list_sources()
+    assert (sid2, "folder", "/r/mgr", "managers") in store.list_sources(role="admin")
     # re-registering updates access in place
     store.register_source("folder", "/r/mgr", access="everyone")
-    assert (sid2, "folder", "/r/mgr", "everyone") in store.list_sources()
+    assert (sid2, "folder", "/r/mgr", "everyone") in store.list_sources(role="admin")
     with pytest.raises(ValueError):
         store.register_source("folder", "/r/x", access="secret")
 
@@ -206,20 +206,20 @@ def test_resync_without_access_preserves_managers_level(store):
     """Plain re-sync (access=None) must NOT demote a managers source (review fix)."""
     sid = store.register_source("folder", "/r/mgr", access="managers")
     store.register_source("folder", "/r/mgr")  # what a periodic re-sync does
-    assert (sid, "folder", "/r/mgr", "managers") in store.list_sources()
+    assert (sid, "folder", "/r/mgr", "managers") in store.list_sources(role="admin")
     # brand-new source registered without access defaults to everyone
     sid2 = store.register_source("folder", "/r/new")
-    assert (sid2, "folder", "/r/new", "everyone") in store.list_sources()
+    assert (sid2, "folder", "/r/new", "everyone") in store.list_sources(role="admin")
     # explicit access still updates
     store.register_source("folder", "/r/mgr", access="everyone")
-    assert (sid, "folder", "/r/mgr", "everyone") in store.list_sources()
+    assert (sid, "folder", "/r/mgr", "everyone") in store.list_sources(role="admin")
 
 
 def test_delete_source_removes_documents(store):
     sid = store.register_source("folder", "/r/gone")
     _add_doc(store, "d.md", "manager budget text", source_id=sid)
     assert store.delete_source(sid) is True
-    assert store.list_sources() == []
+    assert store.list_sources(role="admin") == []
     assert store.document_exists("d.md") is False
     assert store.delete_source(999) is False
 
@@ -249,3 +249,10 @@ def test_list_get_and_grep_filter_by_role(rbac_store):
     assert rbac_store.get_document(mgr_id, role="manager") is not None
     assert all(h.path != "mgr/comp.md" for h in rbac_store.grep("compensation", role="developer"))
     assert any(h.path == "mgr/comp.md" for h in rbac_store.grep("compensation", role="admin"))
+
+
+def test_list_sources_role_filtered(store):
+    store.register_source("folder", "/r/team")
+    store.register_source("folder", "/r/mgr", access="managers")
+    assert {loc for _, _, loc, _ in store.list_sources(role="developer")} == {"/r/team"}
+    assert {loc for _, _, loc, _ in store.list_sources(role="manager")} == {"/r/team", "/r/mgr"}

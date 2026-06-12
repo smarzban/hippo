@@ -223,9 +223,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         return {"id": doc.id, "path": doc.path, "title": doc.title, "content": doc.content, "summary": doc.summary}
 
     @app.get("/sources")
-    async def sources(_=Depends(verify_request)):
+    async def sources(user: AuthenticatedUser = Depends(verify_request)):
         return [{"id": i, "kind": k, "location": loc, "access": acc}
-                for i, k, loc, acc in store.list_sources()]
+                for i, k, loc, acc in store.list_sources(role=user.role)]
 
     @app.post("/sources")
     async def add_source(body: SourceIn, user: AuthenticatedUser = Depends(require_admin)):

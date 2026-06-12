@@ -222,3 +222,14 @@ def test_ingest_managers_repo_unconfigured_400(tmp_path):
     c = TestClient(app)
     r = c.post("/ingest", files={"file": ("m.md", b"# M")}, data={"repo": "managers"}, headers=boss)
     assert r.status_code == 400
+
+
+def test_sources_listing_hides_manager_sources_from_developers(tmp_path):
+    app, store, dev, boss = _iap_app_with_tokens(tmp_path)
+    store.register_source("folder", "/r/team")
+    store.register_source("folder", "/r/mgr", access="managers")
+    c = TestClient(app)
+    dev_locs = {s["location"] for s in c.get("/sources", headers=dev).json()}
+    assert dev_locs == {"/r/team"}
+    boss_locs = {s["location"] for s in c.get("/sources", headers=boss).json()}
+    assert boss_locs == {"/r/team", "/r/mgr"}

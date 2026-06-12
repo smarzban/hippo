@@ -207,9 +207,13 @@ class Storage:
                 "SELECT id FROM sources WHERE location=?", (location,)
             ).fetchone()[0]
 
-    def list_sources(self) -> list[tuple[int, str, str, str]]:
+    def list_sources(self, *, role: str) -> list[tuple[int, str, str, str]]:
+        sql = "SELECT id, kind, location, access FROM sources"
+        if role not in MANAGER_ROLES:
+            sql += " WHERE access != 'managers'"
+        sql += " ORDER BY id"
         with self._lock:
-            return list(self.con.execute("SELECT id, kind, location, access FROM sources ORDER BY id"))
+            return list(self.con.execute(sql))
 
     def delete_source(self, source_id: int) -> bool:
         """Remove a source and every document (and chunk/vector) ingested from it."""
