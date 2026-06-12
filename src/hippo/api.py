@@ -271,6 +271,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         report = await run_in_threadpool(
             sync_folder, folder, store, max_chars=settings.chunk_max_chars,
             overlap_chars=settings.chunk_overlap_chars, enricher=enricher, access=body.access,
+            max_doc_chars=settings.max_doc_chars,
         )
         return {"report": {"added": report.added, "updated": report.updated,
                            "skipped": report.skipped, "removed": report.removed,
