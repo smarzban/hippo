@@ -67,6 +67,7 @@ Hippo supports three auth modes, set via `HIPPO_AUTH_MODE`:
     hippo token create EMAIL        # create a bearer token for headless access
     hippo token list EMAIL          # list a user's tokens (never the secret)
     hippo token revoke EMAIL ID     # revoke a token by id
+    hippo mcp                       # MCP server over stdio (local single-user, admin)
 
 ## Running with Docker
 
@@ -79,6 +80,44 @@ Hippo supports three auth modes, set via `HIPPO_AUTH_MODE`:
     hippo backup snapshot.db
 
 Writes a consistent single-file snapshot via SQLite `VACUUM INTO`. Safe regardless of WAL state — no need to pause writes or copy WAL files separately.
+
+## MCP server
+
+Hippo exposes its search/read/list/grep tools over MCP so Claude Code (and other harnesses) can query the knowledge base, role-filtered by the caller's token.
+
+**Remote (multi-user):** run `hippo serve`; each user creates a token and adds the server:
+
+```bash
+hippo token create you@org.com          # prints hk_...
+claude mcp add --transport http hippo https://hippo.example.com/mcp \
+  --header "Authorization: Bearer hk_..."
+```
+
+The endpoint is served at `/mcp/`; a request to `/mcp` (no trailing slash) is redirected there, which MCP clients follow automatically.
+
+Claude Desktop users: use [`mcp-remote`](https://github.com/geelen/mcp-remote) to inject the header. claude.ai web connectors are not yet supported (need MCP OAuth — planned).
+
+**Local single-user:** `hippo mcp` runs an MCP server over stdio (as admin — no token needed). Point a local stdio MCP client at it:
+
+```bash
+uv run hippo mcp
+```
+
+Example `.claude/mcp.json` entry:
+
+```json
+{
+  "mcpServers": {
+    "hippo": {
+      "command": "uv",
+      "args": ["run", "hippo", "mcp"],
+      "cwd": "/path/to/hippo"
+    }
+  }
+}
+```
+
+**Role filtering:** a manager's token sees manager-access docs; a developer's token does not — enforced in Storage, the same as chat. `HIPPO_MCP_ENABLED=false` disables the `/mcp` HTTP mount.
 
 ## Tests
 

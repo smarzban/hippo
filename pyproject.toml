@@ -19,6 +19,7 @@ dependencies = [
     "httpx>=0.28.1",
     "regex>=2024.0.0",
     "mammoth>=1.6.0",
+    "mcp>=1.27.0",
 ]
 
 [project.scripts]
