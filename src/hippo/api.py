@@ -659,6 +659,54 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         store.set_password(target, hash_password(new_pw))
         return {"email": target, "password": new_pw}
 
+    def _validate_auth_switch(user: AuthenticatedUser, target: str) -> None:
+        if target not in ("password", "oidc", "iap"):
+            raise HTTPException(status_code=400, detail="auth_mode must be password|oidc|iap")
+        # the target mode's required SECRET env vars must be present (env-only)
+        if target in ("password", "oidc") and not settings.secret_key:
+            raise HTTPException(status_code=400,
+                detail="HIPPO_SECRET_KEY (env) is required for the target auth mode")
+        if target == "oidc" and not settings.oidc_client_secret:
+            raise HTTPException(status_code=400,
+                detail="HIPPO_OIDC_CLIENT_SECRET (env) is required for oidc")
+        # anti-lockout: an owner must hold a valid credential in the TARGET mode
+        owners = [e for e, r in store.list_users() if r == "owner"] + sorted(settings.admin_email_list)
+        if target == "password":
+            if not any((store.get_credentials(e) or {}).get("password_hash") for e in owners):
+                raise HTTPException(status_code=400,
+                    detail="set an owner password before switching to password mode "
+                           "(anti-lockout) — use the break-glass CLI or an admin reset")
+        else:  # oidc / iap: an owner email must satisfy the domain gate
+            dom = cfg.get("allowed_domain")
+            if dom and not any(e.endswith("@" + dom.lower()) for e in owners):
+                raise HTTPException(status_code=400,
+                    detail=f"no owner email under @{dom} — would lock out of {target} mode")
+
+    @app.get("/config")
+    async def get_config(user: AuthenticatedUser = Depends(require_owner)):
+        from .config import DB_OVERRIDABLE
+        # effective value per key (DB override else env default); never a secret
+        return {k: cfg.get(k) for k in sorted(DB_OVERRIDABLE)}
+
+    @app.put("/config")
+    async def put_config(request: Request, user: AuthenticatedUser = Depends(require_owner)):
+        from .config import DB_OVERRIDABLE
+        body = await request.json()
+        for key in body:
+            if key not in DB_OVERRIDABLE:
+                raise HTTPException(status_code=400,
+                    detail=f"{key!r} is not a settable operational key (secrets/env-only keys are rejected)")
+        # embedding model/dim cannot change once documents exist (chunk_vec dim is fixed)
+        if ("embedding_model" in body or "embedding_dim" in body) and store.document_count() > 0:
+            raise HTTPException(status_code=409,
+                detail="embedding_model/embedding_dim can't change after documents exist — "
+                       "run `hippo reindex` (CLI) to re-embed")
+        if "auth_mode" in body:
+            _validate_auth_switch(user, body["auth_mode"])
+        for key, value in body.items():
+            store.set_config(key, str(value))
+        return {"ok": True}
+
     @app.get("/tokens")
     async def list_tokens_route(all_users: bool = Query(False, alias="all"),
                                 user: AuthenticatedUser = Depends(verify_request)):

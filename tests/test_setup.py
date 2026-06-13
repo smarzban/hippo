@@ -81,3 +81,61 @@ def test_oidc_setup_refuses_without_secret_env(tmp_path):
     r = c.post("/setup", json={"token": "t", "auth_mode": "oidc", "owner_email": "o@x.com",
                                "oidc": {"client_id": "cid", "public_url": "https://h"}, "models": {}})
     assert r.status_code == 400 and "secret" in r.json()["detail"].lower()
+
+
+def test_config_get_put_owner_only_and_secrets_protected(tmp_path):
+    app = build_app(_settings(tmp_path))  # none-mode caller is owner
+    c = TestClient(app)
+    got = c.get("/config")
+    assert got.status_code == 200
+    assert "chat_model" in got.json() and "secret_key" not in got.json() \
+        and "github_token" not in got.json()
+    # set an operational key
+    assert c.put("/config", json={"chat_model": "ollama:llama3"}).status_code == 200
+    assert app.state.store.get_config("chat_model") == "ollama:llama3"
+    # writing a secret/env-only key is rejected
+    r = c.put("/config", json={"secret_key": "leak"})
+    assert r.status_code == 400 and "secret_key" in r.json()["detail"]
+    # unknown key rejected
+    assert c.put("/config", json={"nonsense": "x"}).status_code == 400
+
+
+def test_embedding_change_guarded_after_documents_exist(tmp_path):
+    app = build_app(_settings(tmp_path))
+    c = TestClient(app)
+    # empty index: allowed
+    assert c.put("/config", json={"embedding_dim": 64}).status_code == 200
+    # add a document, then changing embedding_dim is refused with the reindex note
+    from hippo.chunking import Chunk
+    fid = next(f.id for f in app.state.store.list_folders(role="owner") if f.parent_id is None)
+    app.state.store.upsert_document(source_type="upload", path="x.md", title="x",
+        content="hi", content_hash="h", chunks=[Chunk(position=0, heading_path="", text="hi")],
+        embed_inputs=["hi"], folder_id=fid)
+    r = c.put("/config", json={"embedding_dim": 128})
+    assert r.status_code == 409 and "reindex" in r.json()["detail"].lower()
+    r2 = c.put("/config", json={"embedding_model": "other"})
+    assert r2.status_code == 409 and "reindex" in r2.json()["detail"].lower()
+
+
+def test_auth_switch_blocked_when_owner_lacks_target_credential(tmp_path):
+    # none-mode owner has no password; switching to password would lock everyone out
+    app = build_app(_settings(tmp_path, secret_key="k"))
+    c = TestClient(app)
+    r = c.put("/config", json={"auth_mode": "password"})
+    assert r.status_code == 400 and "password" in r.json()["detail"].lower()
+
+
+def test_auth_switch_to_password_allowed_once_owner_has_password(tmp_path):
+    app = build_app(_settings(tmp_path, secret_key="k"))
+    # none-mode caller is the "local" owner; give a real owner a password first
+    app.state.store.set_password("owner@x.com", __import__("hippo.auth", fromlist=["hash_password"]).hash_password("ownerpass1"), role="owner")
+    c = TestClient(app)
+    # switching is allowed because an owner holds a valid password credential
+    assert c.put("/config", json={"auth_mode": "password"}).status_code == 200
+
+
+def test_auth_switch_to_mode_missing_secret_env_rejected(tmp_path):
+    app = build_app(_settings(tmp_path, secret_key=""))   # no secret key
+    c = TestClient(app)
+    r = c.put("/config", json={"auth_mode": "oidc"})
+    assert r.status_code == 400 and "secret" in r.json()["detail"].lower()
