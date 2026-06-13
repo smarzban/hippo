@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pydantic_ai import Agent, RunContext
 
 from .storage import Storage
+from .tool_io import as_untrusted_data, clamp_top_k
 
 SYSTEM_PROMPT = """You are Hippo, the team's knowledge base — a sharp, friendly teammate who knows the
 team's docs inside out. You answer ONLY from the indexed documents, found via your tools.
@@ -43,13 +44,9 @@ Voice:
 - Keep it tight — conversational doesn't mean long."""
 
 
-def _as_data(text: str) -> str:
-    """Frame document text as untrusted data so the model can't be hijacked by
-    instructions embedded in documents (prompt-injection mitigation). The marker
-    glyphs ⟦ ⟧ are stripped from the body so a document cannot forge a closing
-    marker and smuggle text outside the envelope."""
-    body = text.replace("⟦", "[").replace("⟧", "]")
-    return f"⟦untrusted document data⟧\n{body}\n⟦end⟧"
+# Re-exported under the historical name so existing imports keep working; the
+# implementation (and the MCP server's identical framing) lives in tool_io.py.
+_as_data = as_untrusted_data
 
 
 @dataclass
@@ -74,7 +71,7 @@ def build_agent(model) -> Agent[HubDeps, str]:
         Returns chunks with provenance (path, title, section). Use this first for
         every question; vary the phrasing across calls if results look incomplete.
         """
-        hits = ctx.deps.store.search_hybrid(query, top_k=max(1, top_k), role=ctx.deps.role)
+        hits = ctx.deps.store.search_hybrid(query, top_k=clamp_top_k(top_k), role=ctx.deps.role)
         return [
             {
                 "doc_id": h.document_id,
@@ -104,8 +101,11 @@ def build_agent(model) -> Agent[HubDeps, str]:
 
         Use this to discover which documents exist about a topic before deep-diving.
         """
+        # path/title stay raw (they are the citation identifiers the model echoes);
+        # the free-text summary is document-derived, so frame it as untrusted data too.
         return [
-            {"doc_id": d.id, "path": d.path, "title": d.title, "summary": d.summary or ""}
+            {"doc_id": d.id, "path": d.path, "title": d.title,
+             "summary": _as_data(d.summary) if d.summary else ""}
             for d in ctx.deps.store.list_documents(query=query, role=ctx.deps.role)
         ]
 

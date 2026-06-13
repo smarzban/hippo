@@ -22,7 +22,8 @@ from starlette.responses import JSONResponse, RedirectResponse
 from .agent import HubDeps, build_agent
 from .mcp_server import _mcp_role, build_mcp_server
 from .auth import (AuthError, AuthenticatedUser, IapVerifier, check_domain,
-                   hash_password, resolve_role, validate_google_id_token, verify_password)
+                   hash_password, resolve_role, safe_log, validate_google_id_token,
+                   verify_password)
 from .config import Settings
 from .db import connect
 from .embeddings import build_embedder
@@ -365,14 +366,24 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             creds = store.get_credentials(email)
             # Generic failure for missing user / no local password / bad password.
             generic = HTTPException(status_code=401, detail="invalid email or password")
+            # Failed-login telemetry: password mode is the surface most exposed to
+            # online brute-force/credential-stuffing, so an operator needs a signal
+            # to alert on. email is caller-controlled — sanitize before logging.
             if store.is_locked(email):
+                log.warning("auth denied: account locked %s", safe_log(email))
                 raise HTTPException(status_code=401,
                     detail=f"account locked — try again in up to {store.LOCKOUT_MINUTES} minutes")
             if creds is None or not creds["password_hash"]:
                 # still do nothing leak-y; no counter to bump on a non-user
+                log.warning("auth denied: no local credential for %s", safe_log(email))
                 raise generic
             if not verify_password(creds["password_hash"], password):
                 store.record_failed_login(email)
+                if store.is_locked(email):
+                    log.warning("auth denied: account locked after repeated failures %s",
+                                safe_log(email))
+                else:
+                    log.warning("auth denied: bad password for %s", safe_log(email))
                 raise generic
             store.reset_login_state(email)
             request.session["user_id"] = creds["user_id"]
@@ -552,6 +563,22 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             for f in store.list_folders(role=user.role)
         ]
 
+    def _require_within_roots(location: str) -> Path:
+        """Resolve a filesystem mount location and enforce the HIPPO_SOURCE_ROOTS
+        allowlist. A non-empty allowlist is required in EVERY auth mode (including
+        none) — without it an owner-tier caller (every caller, in none mode) could
+        mount any host directory (/, /etc, ~/.ssh) and exfiltrate local files
+        through chat/grep. Re-checked on resync too, so a path stops syncing once
+        it falls outside a tightened allowlist. Returns the resolved path."""
+        roots = settings.source_root_list
+        if not roots:
+            raise HTTPException(status_code=403,
+                detail="folder mounts disabled: no HIPPO_SOURCE_ROOTS configured")
+        p = Path(location).resolve()
+        if not any(p == r or r in p.parents for r in roots):
+            raise HTTPException(status_code=403, detail=f"{p} is outside HIPPO_SOURCE_ROOTS")
+        return p
+
     @app.post("/folders")
     async def create_folder(body: FolderIn, user: AuthenticatedUser = Depends(require_admin)):
         from .roles import rank as _rank
@@ -568,14 +595,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 if not body.location:
                     raise HTTPException(status_code=400, detail="location required for synced origin")
                 if body.origin == "folder":
-                    folder = Path(body.location).resolve()
-                    roots = settings.source_root_list
-                    if auth_mode != "none" and not roots:
-                        raise HTTPException(status_code=403,
-                            detail="folder mounts disabled: no HIPPO_SOURCE_ROOTS configured")
-                    if roots and not any(folder == r or r in folder.parents for r in roots):
-                        raise HTTPException(status_code=403,
-                            detail=f"{folder} is outside HIPPO_SOURCE_ROOTS")
+                    folder = _require_within_roots(body.location)
                     if not folder.is_dir():
                         raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
                     fid = store.create_folder(parent_id=body.parent_id, name=body.name,
@@ -636,11 +656,15 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         _require_folder_tier(user, f)  # can't resync (and prune) a folder above your tier
         if f.origin != "folder" or not f.location:
             raise HTTPException(status_code=400, detail="only filesystem-synced folders resync")
-        if not Path(f.location).is_dir():
+        # Re-check the allowlist on the STORED location: a path mounted while
+        # HIPPO_SOURCE_ROOTS was loose (or empty) must stop syncing once the
+        # allowlist is tightened, rather than re-ingesting from outside it.
+        loc = _require_within_roots(f.location)
+        if not loc.is_dir():
             raise HTTPException(status_code=400,
                 detail=f"folder path is not currently a directory: {f.location}")
         report = await run_in_threadpool(
-            sync_folder, Path(f.location), store, parent_id=f.parent_id,
+            sync_folder, loc, store, parent_id=f.parent_id,
             max_chars=settings.chunk_max_chars,
             overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
             max_doc_chars=settings.max_doc_chars)
@@ -860,9 +884,24 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.delete("/tokens/{token_id}")
     async def delete_token(token_id: int, user: AuthenticatedUser = Depends(verify_request)):
-        ok = (store.revoke_token_any(token_id) if rank(user.role) >= 1
-              else store.revoke_token(token_id, user.email))
-        if not ok:
+        # Self-revoke is always allowed (matches the caller's own user_id).
+        if store.revoke_token(token_id, user.email):
+            return {"revoked": token_id}
+        # Not the caller's own token: only admins may revoke another user's token,
+        # and never one owned by a user ABOVE their tier — mirroring the effective-role
+        # guard in admin_reset_password (a HIPPO_ADMIN_EMAILS owner outranks an admin).
+        # Without this, a rank-1 admin could DoS an owner's CLI/MCP automation.
+        if rank(user.role) < 1:
+            raise HTTPException(status_code=404, detail="token not found")
+        owner = store.token_owner(token_id)
+        if owner is None:
+            raise HTTPException(status_code=404, detail="token not found")
+        owner_email, owner_role = owner
+        target_role = "owner" if owner_email in settings.admin_email_list else owner_role
+        if rank(target_role) > rank(user.role):
+            raise HTTPException(status_code=403,
+                detail="cannot revoke a token owned by a user above your tier")
+        if not store.revoke_token_any(token_id):
             raise HTTPException(status_code=404, detail="token not found")
         return {"revoked": token_id}
 
