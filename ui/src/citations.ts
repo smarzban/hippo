@@ -17,17 +17,22 @@ export const CITE_RE = /【([^】]+)】|\[([^\][\n]+? > [^\][\n]+?)\]/g;
 // Sentinel wrapped in backticks so it survives as an inline-code node in markdown.
 export const MARKER_RE = /^⟦(\d+)⟧$/; // ⟦N⟧
 
-// The agent appends this exact marker (and only this) when it cannot answer from the
-// docs — a refusal cites nothing, so the "no sources" warning would otherwise misfire on
-// it. An HTML comment: even if a strip is ever missed, the markdown renderer drops it
-// rather than showing it. Must stay byte-for-byte in sync with the agent system prompt.
+// The agent appends this exact marker as the very last thing in its reply (and only
+// then) when it cannot answer from the docs — a refusal cites nothing, so the "no
+// sources" warning would otherwise misfire on it. An HTML comment: even if a strip is
+// ever missed, the markdown renderer drops it. Must stay byte-for-byte in sync with the
+// agent system prompt.
 export const NO_SOURCES_MARKER = "<!--hippo:no-sources-->";
+// Only a marker at the very END (the contract) counts as the refusal signal. Matching it
+// anywhere would let a marker emitted mid-answer — or one quoted from a document — suppress
+// the warning and hide a genuinely uncited claim. So we anchor to end-of-string.
+const TRAILING_MARKER_RE = /\s*<!--hippo:no-sources-->\s*$/;
 
-// Returns the text with every marker removed and whether one was present (a refusal).
-// Fails safe: no marker => refused=false => the warning logic is unchanged.
+// Returns the text with a trailing marker removed and whether one was present (a refusal).
+// Fails safe: a non-trailing or absent marker => refused=false => warning logic unchanged.
 export function stripNoSourcesMarker(text: string): { text: string; refused: boolean } {
-  if (!text.includes(NO_SOURCES_MARKER)) return { text, refused: false };
-  return { text: text.split(NO_SOURCES_MARKER).join("").trim(), refused: true };
+  if (!TRAILING_MARKER_RE.test(text)) return { text, refused: false };
+  return { text: text.replace(TRAILING_MARKER_RE, ""), refused: true };
 }
 
 export function buildDocIndex(docs: DocMeta[]): DocIndex {

@@ -112,4 +112,19 @@ describe("stripNoSourcesMarker", () => {
     expect(refused).toBe(false);
     expect(text).toBe(raw);
   });
+
+  it("ignores a marker that is not at the very end (no false refusal)", () => {
+    // Marker mid-answer with real text after it — must NOT suppress the warning, and the
+    // text is left untouched (a genuine uncited claim could otherwise be hidden).
+    const raw = `${NO_SOURCES_MARKER}\nActually, the answer is 42 (uncited).`;
+    const { text, refused } = stripNoSourcesMarker(raw);
+    expect(refused).toBe(false);
+    expect(text).toBe(raw);
+  });
+
+  it("does not treat a marker quoted inside the answer as a refusal", () => {
+    const raw = `The sentinel string is \`${NO_SOURCES_MARKER}\` and it means ungrounded.`;
+    const { refused } = stripNoSourcesMarker(raw);
+    expect(refused).toBe(false);
+  });
 });
