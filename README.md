@@ -8,10 +8,32 @@ Spec: `docs/superpowers/specs/2026-06-11-knowledge-hub-design.md` · Decisions: 
 ## Quickstart
 
     uv sync
-    export OPENAI_API_KEY=sk-...          # chat + embeddings (defaults)
-    uv run hippo sync ~/path/to/docs        # ingest a folder
+    cp .env.example .env                    # then edit it — see the two options below
+
+**Option A — OpenAI (default).** In `.env`, set a real key:
+
+    OPENAI_API_KEY=sk-...                   # chat + embeddings use OpenAI defaults
+
+**Option B — local Ollama.** Point at Ollama's OpenAI-compatible API and use a local
+embedding model (Ollama Cloud does not serve embeddings). In `.env`:
+
+    OPENAI_API_KEY=ollama
+    OPENAI_BASE_URL=http://localhost:11434/v1
+    HIPPO_CHAT_MODEL=openai:gpt-oss:120b-cloud
+    HIPPO_ENRICH_MODEL=openai:gpt-oss:120b-cloud
+    HIPPO_EMBEDDING_MODEL=nomic-embed-text
+    HIPPO_EMBEDDING_DIM=768
+
+`ollama pull nomic-embed-text`; cloud models need `ollama signin`.
+
+Then — `OPENAI_*` vars must be in the process environment, so load `.env` before starting:
+
+    set -a; source .env; set +a            # OPENAI_* are not auto-loaded from .env
+    uv run hippo sync eval/fixtures         # ingest the bundled sample docs (or your own folder)
     uv run hippo serve                      # API on :8000
-    cd ui && npm install && npm run dev   # chat UI on :5173
+    cd ui && npm install && npm run dev     # chat UI on :5173 (proxies to :8000)
+
+`.env.example` lists every configurable setting; the table below documents the common ones.
 
 ## Configuration (env, prefix HIPPO_)
 
