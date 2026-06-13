@@ -22,6 +22,13 @@ def _bearer(store, email):
     return {"Authorization": f"Bearer {store.create_token(email)}"}
 
 
+def _password_app(tmp_path, **kw):
+    # password mode needs a secret_key; bearer tokens still authenticate in any mode.
+    s = _settings(tmp_path, auth_mode="password", secret_key="x" * 32, **kw)
+    app = build_app(s)
+    return app, app.state.store
+
+
 def test_users_list_and_set_role_admin_only(tmp_path):
     app, store = _app(tmp_path)
     store.ensure_user("dev@x.com")
@@ -80,6 +87,29 @@ def test_create_user_cannot_exceed_creator_tier(tmp_path):
     c = TestClient(app)
     # a rank-1 admin cannot mint an owner
     assert c.post("/users", json={"email": "x@x.com", "role": "owner"}, headers=midadmin).status_code == 403
+
+
+def test_create_user_cannot_mint_credential_for_bootstrap_owner(tmp_path):
+    # PR #15 review HIGH: a HIPPO_ADMIN_EMAILS address resolves to owner at login, so a
+    # rank-1 admin minting an 'admin'-labelled login for it would authenticate as owner.
+    # The effective-role guard must refuse it (password mode = the exploitable path).
+    app, store = _password_app(tmp_path, admin_emails="boss@x.com")
+    store.set_role("mid@x.com", "admin")
+    midadmin = _bearer(store, "mid@x.com")
+    c = TestClient(app)
+    r = c.post("/users", json={"email": "boss@x.com", "role": "admin"}, headers=midadmin)
+    assert r.status_code == 403
+    # no credential was minted for the bootstrap owner
+    assert store.get_credentials("boss@x.com") is None
+
+
+def test_create_user_rejects_malformed_email(tmp_path):
+    app, store = _app(tmp_path)
+    admin = _bearer(store, "boss@x.com")
+    c = TestClient(app)
+    for bad in ["a@b@c.com", "a@.com", "a@b.", "nope", "a@b"]:
+        assert c.post("/users", json={"email": bad, "role": "user"},
+                      headers=admin).status_code == 400, bad
 
 
 def test_set_role_rejects_invalid_and_self_demotion(tmp_path):

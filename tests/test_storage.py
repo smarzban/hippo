@@ -205,6 +205,17 @@ def test_get_profile_unknown_user_is_none(store):
     assert store.get_profile("nobody@x.com") is None
 
 
+def test_create_user_is_insert_only(store):
+    assert store.create_user("new@x.com", role="admin", password_hash="h") is True
+    assert store.get_profile("new@x.com")["role"] == "admin"
+    # a second create is a no-op and reports False — never overwrites role/hash
+    assert store.create_user("NEW@x.com", role="user", password_hash="h2") is False
+    assert store.get_profile("new@x.com")["role"] == "admin"
+    assert store.get_credentials("new@x.com")["password_hash"] == "h"
+    with pytest.raises(ValueError):
+        store.create_user("bad@x.com", role="superuser")
+
+
 def test_token_roundtrip_and_hashing(store):
     t = store.create_token("a@x.com", name="laptop")
     assert t.startswith("hk_") and len(t) > 30

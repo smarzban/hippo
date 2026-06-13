@@ -441,6 +441,22 @@ class Storage:
                     (password_hash, row[0]),
                 )
 
+    def create_user(self, email: str, *, role: str, password_hash: str | None = None) -> bool:
+        """Atomically create a user, insert-only. Returns True iff THIS call created
+        the row; False if the email already existed (no overwrite). Race-safe: the
+        ON CONFLICT DO NOTHING + rowcount check happens inside the lock, so concurrent
+        creates can't both succeed (callers map False -> 409)."""
+        email = _norm_email(email)
+        if role not in VALID_ROLES:
+            raise ValueError(f"invalid role {role!r}; expected one of {VALID_ROLES}")
+        with self._lock, self.con:
+            cur = self.con.execute(
+                "INSERT INTO users(email, role, password_hash) VALUES (?,?,?) "
+                "ON CONFLICT(email) DO NOTHING",
+                (email, role, password_hash),
+            )
+            return cur.rowcount > 0
+
     def get_credentials(self, email: str) -> dict | None:
         """Return {user_id, email, role, password_hash, failed_logins, locked_until}
         for an email, or None if no such user. Used only by the login path."""
