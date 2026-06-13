@@ -136,3 +136,28 @@ def test_token_list_and_revoke(tmp_path):
     assert r.exit_code == 0 and "revoked" in r.output
     r = runner.invoke(app, ["token", "revoke", "a@x.com", "1"], env=env)
     assert r.exit_code != 0  # already revoked
+
+
+def test_user_set_password_creates_working_credential(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from hippo.cli import app
+    from hippo.config import Settings
+    from hippo.db import connect
+    from hippo.embeddings import FakeEmbedder
+    from hippo.storage import Storage
+
+    db = tmp_path / "t.db"
+    monkeypatch.setenv("HIPPO_DB_PATH", str(db))
+    monkeypatch.setenv("HIPPO_EMBEDDING_MODEL", "fake")
+    monkeypatch.setenv("HIPPO_EMBEDDING_DIM", "32")
+    runner = CliRunner()
+    # password entered twice on the prompt
+    result = runner.invoke(app, ["user", "set-password", "boss@x.com", "--role", "owner"],
+                           input="hunter2-strong\nhunter2-strong\n")
+    assert result.exit_code == 0, result.output
+
+    store = Storage(connect(db, embedding_dim=32), FakeEmbedder(dim=32))
+    from hippo.auth import verify_password
+    creds = store.get_credentials("boss@x.com")
+    assert creds["role"] == "owner"
+    assert verify_password(creds["password_hash"], "hunter2-strong") is True

@@ -137,6 +137,10 @@ export default function App() {
   const [pickFile, setPickFile] = useState<File | null>(null);
   const [picked, setPicked] = useState<number[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [authMode, setAuthMode] = useState<string>("none");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPw, setLoginPw] = useState("");
+  const [loginErr, setLoginErr] = useState("");
 
   const refreshDocs = useCallback(() => {
     fetch("/documents")
@@ -163,10 +167,25 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    fetch("/auth/config").then((r) => r.json()).then((c) => setAuthMode(c.auth_mode)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages, status]);
 
   const onOpen = useCallback((id: number, section: string) => setOpenDoc({ id, section }), []);
+
+  async function passwordLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginErr("");
+    const r = await fetch("/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: loginEmail, password: loginPw }),
+    });
+    if (r.ok) window.location.reload();
+    else setLoginErr((await r.json().catch(() => ({}))).detail || "Sign-in failed.");
+  }
 
   async function runUpload() {
     if (!pickFile || picked.length === 0) return;
@@ -191,8 +210,21 @@ export default function App() {
         <div className="empty signin">
           <span className="logo">{"\u{1F99B}"}</span>
           <h1>Hippo</h1>
-          <p>Sign in with your Google account to continue.</p>
-          <a className="upload-btn" href="/auth/login">Sign in with Google</a>
+          {authMode === "password" ? (
+            <form className="login-form" onSubmit={passwordLogin}>
+              <input type="email" placeholder="email" value={loginEmail} autoFocus
+                onChange={(e) => setLoginEmail(e.target.value)} />
+              <input type="password" placeholder="password" value={loginPw}
+                onChange={(e) => setLoginPw(e.target.value)} />
+              <button className="upload-btn" type="submit">Sign in</button>
+              {loginErr && <p className="error">{loginErr}</p>}
+            </form>
+          ) : (
+            <>
+              <p>Sign in with your Google account to continue.</p>
+              <a className="upload-btn" href="/auth/login">Sign in with Google</a>
+            </>
+          )}
         </div>
       </div>
     );
@@ -213,6 +245,8 @@ export default function App() {
             <span className="whoami">
               {me.email} ({me.role})
               {me.auth_mode === "oidc" && <> · <a href="/auth/logout">sign out</a></>}
+              {me.auth_mode === "password" && <> · <button className="linklike"
+                onClick={async () => { await fetch("/auth/logout", { method: "POST" }); window.location.reload(); }}>sign out</button></>}
             </span>
           )}
           {me && (
@@ -252,7 +286,7 @@ export default function App() {
       )}
 
       {view === "settings" && me ? (
-        <Settings role={me.role as "user" | "admin" | "owner"} onClose={() => setView("chat")} />
+        <Settings role={me.role as "user" | "admin" | "owner"} authMode={authMode} onClose={() => setView("chat")} />
       ) : (
         <>
           <main>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { flattenTree, type Folder } from "./folders";
+import { passwordChangeError } from "./auth";
 
 type Role = "user" | "admin" | "owner";
 
@@ -13,7 +14,7 @@ async function getJSON(url: string) {
   return r.json();
 }
 
-export default function Settings({ role, onClose }: { role: Role; onClose: () => void }) {
+export default function Settings({ role, authMode, onClose }: { role: Role; authMode: string; onClose: () => void }) {
   const tabs = tabsForRole(role);
   const [tab, setTab] = useState(tabs[0]);
   return (
@@ -27,9 +28,14 @@ export default function Settings({ role, onClose }: { role: Role; onClose: () =>
           <button key={t} className={t === tab ? "active" : ""} onClick={() => setTab(t)}>{t}</button>
         ))}
       </nav>
-      {tab === "Tokens" && <TokensPanel admin={role !== "user"} />}
+      {tab === "Tokens" && (
+        <>
+          <TokensPanel admin={role !== "user"} />
+          {authMode === "password" && <PasswordPanel />}
+        </>
+      )}
       {tab === "Folders" && <FoldersPanel />}
-      {tab === "Users" && <UsersPanel />}
+      {tab === "Users" && <UsersPanel authMode={authMode} />}
       {tab === "Status" && <StatusPanel />}
     </div>
   );
@@ -84,6 +90,34 @@ function TokensPanel({ admin }: { admin: boolean }) {
           </tr>
         ))}
       </tbody></table>
+    </div>
+  );
+}
+
+function PasswordPanel() {
+  const [cur, setCur] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [note, setNote] = useState("");
+  const submit = async () => {
+    const err = passwordChangeError(cur, next, confirm);
+    if (err) { setNote(err); return; }
+    const r = await fetch("/me/password", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current: cur, new: next }) });
+    if (r.ok) { setNote("password changed"); setCur(""); setNext(""); setConfirm(""); }
+    else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+  };
+  return (
+    <div className="panel">
+      <p>Change your password</p>
+      <div className="row">
+        <input type="password" placeholder="current" value={cur} onChange={(e) => setCur(e.target.value)} />
+        <input type="password" placeholder="new" value={next} onChange={(e) => setNext(e.target.value)} />
+        <input type="password" placeholder="confirm" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        <button onClick={submit}>Update</button>
+        <span className="note">{note}</span>
+      </div>
     </div>
   );
 }
@@ -156,9 +190,10 @@ function FoldersPanel() {
   );
 }
 
-function UsersPanel() {
+function UsersPanel({ authMode }: { authMode: string }) {
   const [rows, setRows] = useState<any[]>([]);
   const [note, setNote] = useState("");
+  const [resetPw, setResetPw] = useState<{ email: string; pw: string } | null>(null);
   const load = useCallback(() => { getJSON("/users").then(setRows).catch(() => setRows([])); }, []);
   useEffect(() => { load(); }, [load]);
   const setRole = async (email: string, role: string) => {
@@ -170,6 +205,24 @@ function UsersPanel() {
     } else setNote("");
     load();   // reload reverts the dropdown if the change was refused
   };
+  const reset = async (email: string) => {
+    const r = await fetch(`/users/${encodeURIComponent(email)}/password`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: "{}" });
+    if (r.ok) { const b = await r.json(); setResetPw({ email, pw: b.password }); }
+    else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+  };
+  if (resetPw) {
+    return (
+      <div className="panel">
+        <p>Password reset for <strong>{resetPw.email}</strong> — copy now, it won't be shown again:</p>
+        <div className="secret">
+          <code>{resetPw.pw}</code>
+          <button onClick={() => navigator.clipboard?.writeText(resetPw.pw)}>Copy</button>
+          <button onClick={() => setResetPw(null)}>Done</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="panel">
       <span className="note">{note}</span>
@@ -178,7 +231,9 @@ function UsersPanel() {
           <tr key={u.email}><td>{u.email}</td>
             <td><select value={u.role} onChange={(e) => setRole(u.email, e.target.value)}>
               {["user", "admin", "owner"].map((r) => <option key={r} value={r}>{r}</option>)}
-            </select></td></tr>
+            </select></td>
+            {authMode === "password" && <td><button onClick={() => reset(u.email)}>Reset password</button></td>}
+          </tr>
         ))}
       </tbody></table>
     </div>

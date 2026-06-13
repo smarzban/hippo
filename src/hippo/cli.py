@@ -29,6 +29,8 @@ role_app = typer.Typer(help="Manage user roles (user | admin | owner).")
 app.add_typer(role_app, name="role")
 token_app = typer.Typer(help="Personal access tokens for MCP/API clients.")
 app.add_typer(token_app, name="token")
+user_app = typer.Typer(help="Local user accounts (password auth).")
+app.add_typer(user_app, name="user")
 
 
 @role_app.command("set")
@@ -80,6 +82,28 @@ def token_revoke(email: str, token_id: int):
     else:
         typer.echo(f"no token #{token_id} for {email}", err=True)
         raise typer.Exit(1)
+
+
+@user_app.command("set-password")
+def user_set_password(
+    email: str,
+    role: str = typer.Option(None, help="role for a NEW user: user | admin | owner"),
+):
+    """Set (or reset) a local password for EMAIL. Prompts twice, no echo. Creates
+    the user if absent. Break-glass bootstrap / locked-out-owner recovery."""
+    from .auth import hash_password
+
+    pw = typer.prompt("New password", hide_input=True, confirmation_prompt=True)
+    if len(pw) < 8:
+        typer.echo("password must be at least 8 characters", err=True)
+        raise typer.Exit(1)
+    store, _ = _store(Settings())
+    try:
+        store.set_password(email, hash_password(pw), role=role)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    typer.echo(f"password set for {email}" + (f" (role {role})" if role else ""))
 
 
 @app.command()

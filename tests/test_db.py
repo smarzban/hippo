@@ -85,6 +85,12 @@ def test_legacy_schema_raises_clear_error(tmp_path):
         connect(p, embedding_dim=32)
 
 
+def test_users_has_password_and_lockout_columns(tmp_path):
+    con = connect(tmp_path / "t.db", embedding_dim=32)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(users)")}
+    assert {"password_hash", "failed_logins", "locked_until"} <= cols
+
+
 def test_legacy_schema_with_source_id_present_still_rejected(tmp_path):
     """Defense-in-depth (PR #11 review, LOW): a hybrid table that grew a folder_id
     but kept the legacy source_id column is still rejected — the source_id signal
