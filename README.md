@@ -75,35 +75,39 @@ Hippo supports three auth modes, set via `HIPPO_AUTH_MODE`:
 
 **Bearer tokens** are accepted in every mode for headless clients (Slack bot, MCP server, CI scripts). Create a token with `hippo token create <email>`.
 
-**Roles:** users have one of three roles — `developer` (default), `manager`, or `admin`. Set roles with `hippo role set <email> <role>`. Sources can be restricted to `managers` and above via the `access` field on `/sources`. Admins can manage sources and tokens via the API or the Settings UI.
+**Roles:** users have one of three roles — `user` (default), `admin`, or `owner`. Set roles with `hippo role set <email> <role>`. Content is tiered by the folder it lives in — a `user`-tier folder is visible to everyone; an `admin`-tier folder is visible to `admin` and `owner`; an `owner`-tier folder is visible only to `owner`. Admins can manage folders and tokens via the API or the Settings UI. Emails listed in `HIPPO_ADMIN_EMAILS` are always promoted to `owner` on sign-in.
 
 ## Settings UI
 
 Every signed-in user can access the Settings view via the gear (⚙) button in the header. From there:
 
 - **Tokens** (everyone) — create, list, and revoke your own personal access tokens (`hk_…`). The plaintext secret is shown exactly once after creation. Use these tokens for MCP clients, the Slack bot, and CI scripts. Each token carries your own role (no escalation).
-- **Sources** (admin only) — list registered sources, add new ones (must be within `HIPPO_SOURCE_ROOTS`), change their access level, trigger a re-sync, or delete them.
+- **Folders** (admin only) — browse the folder tree, create child folders, rename/delete folders, or trigger a re-sync on filesystem-synced folders. Each folder has a tier (`user`, `admin`, or `owner`) inherited from its parent. Documents live in exactly one folder; upload access is gated by the folder's tier.
 - **Users & Roles** (admin only) — list all users and change their role. An admin cannot demote their own account (anti-lockout guard).
-- **Status** (admin only) — read-only view of the instance configuration: auth mode, models, repo wiring, MCP/Slack status, and doc/source/user counts. No secrets are exposed.
+- **Status** (admin only) — read-only view of the instance configuration: auth mode, models, repo wiring, MCP/Slack status, and doc/folder/user counts. No secrets are exposed.
 
-New API endpoints backing the Settings UI: `GET /users`, `PUT /users/{email}/role`, `GET /tokens`, `POST /tokens`, `DELETE /tokens/{id}`, `POST /sources/{id}/resync`, `GET /settings/status`.
+**Uploading documents:** click "Add doc" in the header, pick a file, and select one or more destination folders from the modal. Only folders writable by your role are shown (manual folders at or below your tier). The same file can be ingested into multiple folders.
 
-**Upload to repo:** when `HIPPO_GITHUB_TOKEN` and a repo are configured, files uploaded via `/ingest` are committed to the configured GitHub repo via the Contents API (`uploads/` prefix). Without GitHub config, files are ingested directly (unversioned).
+New API endpoints backing the Settings UI: `GET /users`, `PUT /users/{email}/role`, `GET /tokens`, `POST /tokens`, `DELETE /tokens/{id}`, `GET /folders`, `POST /folders`, `PATCH /folders/{id}`, `DELETE /folders/{id}`, `POST /folders/{id}/resync`, `GET /settings/status`.
+
+**Upload to repo:** when `HIPPO_GITHUB_TOKEN` and a repo are configured, files uploaded via `/ingest` are committed to the configured GitHub repo via the Contents API. Without GitHub config, files are ingested directly (unversioned).
+
+**Legacy database note:** SP1 (roles & folder model) introduced a new database schema with no migration. A pre-SP1 database (with `documents.source_id` and no `folders` table) is rejected on startup with a clear "recreate the database" error. Delete the old `.db` file and re-sync your content.
 
 ## CLI
 
-    hippo sync [FOLDER] [--watch]   # register+sync folder / re-sync all sources
+    hippo sync [FOLDER] [--watch]   # register+sync folder / re-sync all synced folders
     hippo add FILE                  # ingest one file
     hippo search QUERY              # debug hybrid search
     hippo reindex                   # re-embed after model change
     hippo eval eval/golden.yaml     # retrieval recall@k
     hippo serve                     # FastAPI server
-    hippo role set EMAIL ROLE       # set user role (developer|manager|admin)
+    hippo role set EMAIL ROLE       # set user role (user|admin|owner)
     hippo role list                 # list all users and their roles
     hippo token create EMAIL        # create a bearer token for headless access
     hippo token list EMAIL          # list a user's tokens (never the secret)
     hippo token revoke EMAIL ID     # revoke a token by id
-    hippo mcp                       # MCP server over stdio (local single-user, admin)
+    hippo mcp                       # MCP server over stdio (local single-user, owner)
     hippo slack                     # Slack bot over Socket Mode (read-only Q&A)
 
 ## Running with Docker
@@ -134,7 +138,7 @@ The endpoint is served at `/mcp/`; a request to `/mcp` (no trailing slash) is re
 
 Claude Desktop users: use [`mcp-remote`](https://github.com/geelen/mcp-remote) to inject the header. claude.ai web connectors are not yet supported (need MCP OAuth — planned).
 
-**Local single-user:** `hippo mcp` runs an MCP server over stdio (as admin — no token needed). Point a local stdio MCP client at it:
+**Local single-user:** `hippo mcp` runs an MCP server over stdio (as owner — no token needed). Point a local stdio MCP client at it:
 
 ```bash
 uv run hippo mcp
@@ -154,13 +158,13 @@ Example `.claude/mcp.json` entry:
 }
 ```
 
-**Role filtering:** a manager's token sees manager-access docs; a developer's token does not — enforced in Storage, the same as chat. `HIPPO_MCP_ENABLED=false` disables the `/mcp` HTTP mount.
+**Role filtering:** an `admin` token sees user- and admin-tier folders; a `user` token sees only user-tier folders — enforced in Storage, the same as chat. `HIPPO_MCP_ENABLED=false` disables the `/mcp` HTTP mount.
 
 ## Slack bot
 
 Ask Hippo questions from Slack — DM the app, or `@Hippo <question>` in a channel.
 Answers are role-filtered: a DM uses your full access; a channel @mention only ever
-surfaces `everyone`-access docs (sensitive content stays in DMs). Follow-ups work —
+surfaces `user`-tier docs (admin/owner-tier content stays in DMs). Follow-ups work —
 DMs are a flowing conversation; in channels, reply in the thread and `@Hippo` again.
 
 It runs in **Socket Mode** (an outbound WebSocket), so it needs no public endpoint and

@@ -26,16 +26,16 @@ def _store(tmp_path):
 
 
 def test_surface_role_dm_keeps_full_role():
-    assert surface_role("manager", is_dm=True) == "manager"
     assert surface_role("admin", is_dm=True) == "admin"
-    assert surface_role("developer", is_dm=True) == "developer"
+    assert surface_role("owner", is_dm=True) == "owner"
+    assert surface_role("user", is_dm=True) == "user"
 
 
-def test_surface_role_channel_forces_developer():
-    # Public surface: only everyone-access docs, regardless of asker's role.
-    assert surface_role("manager", is_dm=False) == "developer"
-    assert surface_role("admin", is_dm=False) == "developer"
-    assert surface_role("developer", is_dm=False) == "developer"
+def test_surface_role_channel_forces_user():
+    # Public surface: only user-tier docs, regardless of asker's role.
+    assert surface_role("admin", is_dm=False) == "user"
+    assert surface_role("owner", is_dm=False) == "user"
+    assert surface_role("user", is_dm=False) == "user"
 
 
 def test_format_answer_passthrough():
@@ -79,7 +79,7 @@ async def test_answer_question_returns_agent_output(tmp_path):
     agent = build_agent(FunctionModel(reply))
     store = _store(tmp_path)
     out = await answer_question(
-        agent, store, Settings(_env_file=None), question="hi", role="developer", history=[]
+        agent, store, Settings(_env_file=None), question="hi", role="user", history=[]
     )
     assert out == "Here is the answer [docs/x.md > S]"
 
@@ -91,7 +91,7 @@ async def test_answer_question_friendly_on_error(tmp_path):
     agent = build_agent(FunctionModel(boom))
     store = _store(tmp_path)
     out = await answer_question(
-        agent, store, Settings(_env_file=None), question="hi", role="developer", history=[]
+        agent, store, Settings(_env_file=None), question="hi", role="user", history=[]
     )
     assert "error" in out.lower()  # friendly, not a stack trace
 
@@ -188,24 +188,28 @@ from hippo.chunking import Chunk
 
 
 def _rbac_store(tmp_path):
-    """Store with one everyone doc and one managers-only doc."""
+    """Store with one user-tier doc and one admin-tier doc."""
     con = connect(tmp_path / "h.db", embedding_dim=8)
     store = Storage(con, FakeEmbedder(dim=8))
-    everyone_sid = store.register_source("folder", "/e", access="everyone")
-    mgr_sid = store.register_source("folder", "/m", access="managers")
+    # Get the seeded root folders
+    rows = store.con.execute(
+        "SELECT min_role, id FROM folders WHERE parent_id IS NULL").fetchall()
+    by_role = {r: i for r, i in rows}
+    user_root = by_role["user"]
+    admin_root = by_role["admin"]
     store.upsert_document(
         source_type="folder", path="/e/pub.md", title="Public",
         content="public onboarding info", content_hash="h1",
         chunks=[Chunk(position=0, heading_path="Public", text="public onboarding info")],
         embed_inputs=["public onboarding info"],
-        source_id=everyone_sid,
+        folder_id=user_root,
     )
     store.upsert_document(
         source_type="folder", path="/m/sal.md", title="Salaries",
         content="secret salary bands", content_hash="h2",
         chunks=[Chunk(position=0, heading_path="Salaries", text="secret salary bands")],
         embed_inputs=["secret salary bands"],
-        source_id=mgr_sid,
+        folder_id=admin_root,
     )
     return store
 
@@ -224,14 +228,14 @@ def _listing_agent():
     return build_agent(FunctionModel(reply))
 
 
-async def test_manager_dm_sees_manager_doc_channel_does_not(tmp_path):
+async def test_admin_dm_sees_admin_doc_channel_does_not(tmp_path):
     store = _rbac_store(tmp_path)
     store.ensure_user("mgr@example.com")
-    store.set_role("mgr@example.com", "manager")
+    store.set_role("mgr@example.com", "admin")
     settings = Settings(_env_file=None, allowed_domain="example.com")
     agent = _listing_agent()
 
-    # DM → full manager role → the answer (echoed list_documents result) includes Salaries.
+    # DM → full admin role → the answer (echoed list_documents result) includes Salaries.
     dm = FakeSlack(email="mgr@example.com")
     await handle_event(
         {"user": "UM", "channel": "D1", "ts": "1.0", "text": "list the docs"},
@@ -239,8 +243,8 @@ async def test_manager_dm_sees_manager_doc_channel_does_not(tmp_path):
     )
     assert "Salaries" in dm.updated[0]["text"]
 
-    # Channel @mention → forced developer → the SAME manager cannot surface Salaries.
-    # (If surface_role were dropped, the manager role would leak Salaries here.)
+    # Channel @mention → forced user → the SAME admin cannot surface Salaries.
+    # (If surface_role were dropped, the admin role would leak Salaries here.)
     ch = FakeSlack(email="mgr@example.com")
     await handle_event(
         {"user": "UM", "channel": "C1", "ts": "2.0", "text": "<@UBOT> list the docs"},

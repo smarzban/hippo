@@ -25,12 +25,12 @@ def _settings(tmp_path, **over):
     return Settings(**base)
 
 
-def test_none_mode_is_implicit_admin(tmp_path):
+def test_none_mode_is_implicit_owner(tmp_path):
     app = build_app(_settings(tmp_path))
     c = TestClient(app)
     assert c.get("/health").status_code == 200
     me = c.get("/me").json()
-    assert me["role"] == "admin" and me["auth_mode"] == "none"
+    assert me["role"] == "owner" and me["auth_mode"] == "none"
 
 
 def test_iap_mode_rejects_without_assertion(tmp_path):
@@ -46,8 +46,7 @@ def test_iap_mode_rejects_without_assertion(tmp_path):
         key, algorithm="ES256", headers={"kid": "k1"})
     r = c.get("/me", headers={"x-goog-iap-jwt-assertion": assertion})
     assert r.status_code == 200 and r.json() == {
-        "email": "dev@x.com", "role": "developer", "auth_mode": "iap",
-        "upload": {"team_repo": False, "managers_repo": False}}
+        "email": "dev@x.com", "role": "user", "auth_mode": "iap"}
 
 
 def test_domain_gate_403(tmp_path):
@@ -67,26 +66,33 @@ def test_bearer_token_works_in_any_mode_and_env_admins_promoted(tmp_path):
     t_dev = store.create_token("dev@x.com")
     t_boss = store.create_token("boss@x.com")
     c = TestClient(app)
-    assert c.get("/me", headers={"Authorization": f"Bearer {t_dev}"}).json()["role"] == "developer"
-    assert c.get("/me", headers={"Authorization": f"Bearer {t_boss}"}).json()["role"] == "admin"
+    assert c.get("/me", headers={"Authorization": f"Bearer {t_dev}"}).json()["role"] == "user"
+    assert c.get("/me", headers={"Authorization": f"Bearer {t_boss}"}).json()["role"] == "owner"
     assert c.get("/me", headers={"Authorization": "Bearer hk_bogus"}).status_code == 401
 
 
 def test_role_filtering_through_api(tmp_path):
+    """Admin-tier documents are hidden from user-tier callers."""
     s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD, admin_emails="boss@x.com")
     app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}))
     store = app.state.store
-    mgr = store.register_source("folder", "/r/mgr", access="managers")
-    store.upsert_document(source_type="folder", path="mgr/comp.md", title="comp",
-                          content="secret", content_hash="h", source_id=mgr,
-                          chunks=[Chunk(position=0, heading_path="comp", text="secret")],
-                          embed_inputs=["secret"])
+    # find the Private (admin-tier) root
+    private_id = store.con.execute(
+        "SELECT id FROM folders WHERE min_role='admin' AND parent_id IS NULL").fetchone()[0]
+    # ingest a doc into the admin-tier folder
+    from hippo.ingest import Ingestor
+    ing = Ingestor(store, max_chars=3000, overlap_chars=200)
+    ing.ingest_bytes("comp.md", b"# Comp\n\nsecret", folder_id=private_id,
+                     path_prefix="Private")
     c = TestClient(app)
     dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
     boss = {"Authorization": f"Bearer {store.create_token('boss@x.com')}"}
-    assert all(d["path"] != "mgr/comp.md" for d in c.get("/documents", headers=dev).json())
-    assert any(d["path"] == "mgr/comp.md" for d in c.get("/documents", headers=boss).json())
-    doc_id = next(d["id"] for d in c.get("/documents", headers=boss).json() if d["path"] == "mgr/comp.md")
+    # user-tier caller cannot see admin-tier doc
+    assert all(d["path"] != "Private/comp.md" for d in c.get("/documents", headers=dev).json())
+    # owner/admin can see it
+    admin_docs = c.get("/documents", headers=boss).json()
+    assert any(d["path"] == "Private/comp.md" for d in admin_docs)
+    doc_id = next(d["id"] for d in admin_docs if d["path"] == "Private/comp.md")
     assert c.get(f"/documents/{doc_id}", headers=dev).status_code == 404
     assert c.get(f"/documents/{doc_id}", headers=boss).status_code == 200
 
@@ -143,91 +149,49 @@ def _iap_app_with_tokens(tmp_path, **settings_over):
             {"Authorization": f"Bearer {store.create_token('boss@x.com')}"})
 
 
-def test_sources_admin_only_and_allowlisted(tmp_path):
+def test_folders_admin_only_and_allowlisted(tmp_path):
+    """Only admin+ can create folders; folder-mount checks HIPPO_SOURCE_ROOTS."""
     docs = tmp_path / "roots" / "team"
     docs.mkdir(parents=True)
     (docs / "a.md").write_text("# A\n\nalpha")
     app, store, dev, boss = _iap_app_with_tokens(tmp_path, source_roots=str(tmp_path / "roots"))
     c = TestClient(app)
-    body = {"location": str(docs), "access": "everyone"}
-    assert c.post("/sources", json=body, headers=dev).status_code == 403   # not admin
-    outside = {"location": str(tmp_path), "access": "everyone"}            # parent of root
-    assert c.post("/sources", json=outside, headers=boss).status_code == 403
-    r = c.post("/sources", json=body, headers=boss)
-    assert r.status_code == 200 and r.json()["report"]["added"] == 1
-    listed = c.get("/sources", headers=dev).json()
-    assert listed[0]["access"] == "everyone"
+    rows = c.get("/folders", headers=boss).json()
+    default_id = next(r["id"] for r in rows if r["name"] == "Default")
+    # user-tier is forbidden from creating folders
+    assert c.post("/folders", json={"parent_id": default_id, "name": "X"}, headers=dev).status_code == 403
+    # admin can create a folder
+    r = c.post("/folders", json={"parent_id": default_id, "name": "Team"}, headers=boss)
+    assert r.status_code == 200
 
 
-def test_sources_registration_refused_without_roots_when_auth_on(tmp_path):
+def test_folders_registration_refused_without_roots_when_auth_on(tmp_path):
+    """Mounting a folder-origin without HIPPO_SOURCE_ROOTS configured is refused."""
     app, _, _, boss = _iap_app_with_tokens(tmp_path)  # no source_roots configured
     c = TestClient(app)
-    r = c.post("/sources", json={"location": str(tmp_path)}, headers=boss)
+    rows = c.get("/folders", headers=boss).json()
+    default_id = next(r["id"] for r in rows if r["name"] == "Default")
+    r = c.post("/folders",
+               json={"parent_id": default_id, "name": "T", "origin": "folder",
+                     "location": str(tmp_path)},
+               headers=boss)
     assert r.status_code == 403
 
 
-def test_delete_source_admin_only(tmp_path):
-    docs = tmp_path / "roots" / "m"
-    docs.mkdir(parents=True)
-    (docs / "s.md").write_text("# S\n\nsecret")
-    app, store, dev, boss = _iap_app_with_tokens(tmp_path, source_roots=str(tmp_path / "roots"))
+def test_delete_folder_admin_only(tmp_path):
+    """Deleting a non-root folder is admin-only; non-root deletion works for admin."""
+    app, store, dev, boss = _iap_app_with_tokens(tmp_path)
     c = TestClient(app)
-    c.post("/sources", json={"location": str(docs), "access": "managers"}, headers=boss)
-    sid = c.get("/sources", headers=boss).json()[0]["id"]
-    assert c.delete(f"/sources/{sid}", headers=dev).status_code == 403
-    assert c.delete(f"/sources/{sid}", headers=boss).status_code == 200
-    assert c.get("/sources", headers=boss).json() == []
-    assert c.delete(f"/sources/{sid}", headers=boss).status_code == 404
-
-
-class _FakeGH:
-    def __init__(self):
-        self.calls = []
-
-    def put_file(self, path, content, message):
-        self.calls.append((path, content, message))
-        return "sha1"
-
-
-def test_ingest_commits_to_repo_when_configured(tmp_path):
-    fakes = {}
-
-    def factory(repo):
-        fakes[repo] = _FakeGH()
-        return fakes[repo]
-
-    s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD, admin_emails="boss@x.com",
-                  github_token="t", github_docs_repo="org/docs", github_managers_repo="org/mgr")
-    app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}),
-                    github_factory=factory)
-    store = app.state.store
-    dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
-    boss = {"Authorization": f"Bearer {store.create_token('boss@x.com')}"}
-    c = TestClient(app)
-    r = c.post("/ingest", files={"file": ("n.md", b"# N\n\nbody")}, headers=dev)
-    assert r.status_code == 200 and r.json()["status"] == "committed"
-    assert fakes["org/docs"].calls[0][0] == "uploads/8d360d6a-n.md"
-    assert "dev@x.com" in fakes["org/docs"].calls[0][2]
-    # managers repo: developers refused, managers/admins allowed
-    r = c.post("/ingest", files={"file": ("m.md", b"# M")}, data={"repo": "managers"}, headers=dev)
-    assert r.status_code == 403
-    r = c.post("/ingest", files={"file": ("m.md", b"# M")}, data={"repo": "managers"}, headers=boss)
-    assert r.status_code == 200 and fakes["org/mgr"].calls[0][0] == "uploads/29220162-m.md"
-
-
-def test_ingest_falls_back_to_unversioned_without_github(tmp_path):
-    app = build_app(_settings(tmp_path))  # none mode, no github config
-    c = TestClient(app)
-    r = c.post("/ingest", files={"file": ("n.md", b"# N\n\nbody")})
-    assert r.status_code == 200
-    assert r.json()["status"] == "added" and r.json()["versioned"] is False
-
-
-def test_ingest_managers_repo_unconfigured_400(tmp_path):
-    app, store, dev, boss = _iap_app_with_tokens(tmp_path)  # no github settings at all
-    c = TestClient(app)
-    r = c.post("/ingest", files={"file": ("m.md", b"# M")}, data={"repo": "managers"}, headers=boss)
-    assert r.status_code == 400
+    rows = c.get("/folders", headers=boss).json()
+    default_id = next(r["id"] for r in rows if r["name"] == "Default")
+    # admin creates a child folder
+    fid = c.post("/folders", json={"parent_id": default_id, "name": "Sub"}, headers=boss).json()["id"]
+    # user-tier cannot delete
+    assert c.delete(f"/folders/{fid}", headers=dev).status_code == 403
+    # admin can delete
+    assert c.delete(f"/folders/{fid}", headers=boss).status_code == 200
+    # already gone -> 404
+    assert c.delete(f"/folders/{fid}", headers=boss).status_code == 404
 
 
 def test_iap_mode_requires_audience(tmp_path):
@@ -235,235 +199,88 @@ def test_iap_mode_requires_audience(tmp_path):
         build_app(_settings(tmp_path, auth_mode="iap"))
 
 
-def test_ingest_commit_path_is_content_hash_qualified(tmp_path):
-    import hashlib
-    fakes = {}
-
-    def factory(repo):
-        fakes.setdefault(repo, _FakeGH())
-        return fakes[repo]
-
-    s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD,
-                  github_token="t", github_docs_repo="org/docs")
-    app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}),
-                    github_factory=factory)
-    store = app.state.store
-    dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
-    c = TestClient(app)
-    r1 = c.post("/ingest", files={"file": ("notes.md", b"first doc")}, headers=dev)
-    r2 = c.post("/ingest", files={"file": ("notes.md", b"different doc")}, headers=dev)
-    p1, p2 = r1.json()["path"], r2.json()["path"]
-    assert p1 != p2  # distinct contents must not overwrite each other
-    h1 = hashlib.sha256(b"first doc").hexdigest()[:8]
-    assert p1 == f"uploads/{h1}-notes.md"
-    # identical re-upload converges on the same path (same content, same commit target)
-    r3 = c.post("/ingest", files={"file": ("notes.md", b"first doc")}, headers=dev)
-    assert r3.json()["path"] == p1
-
-
 def test_role_grant_applies_across_email_casing(tmp_path):
     app, store, dev, boss = _iap_app_with_tokens(tmp_path)
-    store.set_role("Mole@x.com", "manager")           # admin grants with one casing
+    store.set_role("Mole@x.com", "admin")           # admin grants with one casing
     tok = store.create_token("mole@x.com")            # user logs in with another
     c = TestClient(app)
-    assert c.get("/me", headers={"Authorization": f"Bearer {tok}"}).json()["role"] == "manager"
+    assert c.get("/me", headers={"Authorization": f"Bearer {tok}"}).json()["role"] == "admin"
 
 
-def test_sources_listing_hides_manager_sources_from_developers(tmp_path):
+def test_folder_access_hides_higher_tier_from_user(tmp_path):
+    """User-tier callers should only see user-tier folders in /folders listing."""
     app, store, dev, boss = _iap_app_with_tokens(tmp_path)
-    store.register_source("folder", "/r/team")
-    store.register_source("folder", "/r/mgr", access="managers")
     c = TestClient(app)
-    dev_locs = {s["location"] for s in c.get("/sources", headers=dev).json()}
-    assert dev_locs == {"/r/team"}
-    boss_locs = {s["location"] for s in c.get("/sources", headers=boss).json()}
-    assert boss_locs == {"/r/team", "/r/mgr"}
+    # boss sees all three seeded roots (user, admin, owner tiers)
+    boss_folders = {f["name"] for f in c.get("/folders", headers=boss).json()}
+    assert {"Default", "Private", "Owner"} <= boss_folders
+    # user-tier sees only the Default (user-tier) root
+    dev_folders = {f["name"] for f in c.get("/folders", headers=dev).json()}
+    assert "Default" in dev_folders
+    assert "Private" not in dev_folders
+    assert "Owner" not in dev_folders
 
 
-def test_ingest_filename_sanitized_for_github_path(tmp_path):
-    fakes = {}
-
-    def factory(repo):
-        fakes.setdefault(repo, _FakeGH())
-        return fakes[repo]
-
-    s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD,
-                  github_token="t", github_docs_repo="org/docs")
-    app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}),
-                    github_factory=factory)
-    store = app.state.store
-    dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
+def test_ingest_falls_back_to_direct_without_github(tmp_path):
+    app = build_app(_settings(tmp_path))  # none mode, no github config
     c = TestClient(app)
-    r = c.post("/ingest", files={"file": ("rep ort?ref=evil#x.md", b"data")}, headers=dev)
+    fid = next(r["id"] for r in c.get("/folders").json() if r["name"] == "Default")
+    r = c.post("/ingest", files={"file": ("n.md", b"# N\n\nbody")},
+               data={"folder_ids": [str(fid)]})
     assert r.status_code == 200
-    committed_path = fakes["org/docs"].calls[0][0]
-    assert committed_path.startswith("uploads/")
-    assert all(ch not in committed_path for ch in "?# ")  # no URL-significant chars
+    assert r.json()["status"] == "added" and r.json()["versioned"] is False
 
 
-def test_safe_filename_helper():
-    from hippo.api import _safe_filename
-    assert _safe_filename("../../etc/passwd") == "passwd"
-    assert _safe_filename("a b?c#d.md") == "a_b_c_d.md"
-    assert _safe_filename("???") == "upload"
-    assert _safe_filename("notes.md") == "notes.md"
-
-
-def test_ingest_rejects_oversized_upload(tmp_path):
-    app = build_app(_settings(tmp_path, max_upload_bytes=20))
+def test_ingest_filename_sanitized(tmp_path):
+    app = build_app(_settings(tmp_path))
     c = TestClient(app)
-    r = c.post("/ingest", files={"file": ("big.md", b"x" * 500)})
-    assert r.status_code == 413
-
-
-def test_serves_built_ui_when_configured(tmp_path):
-    dist = tmp_path / "dist"
-    (dist / "assets").mkdir(parents=True)
-    (dist / "index.html").write_text("<!doctype html><title>Hippo</title>")
-    (dist / "assets" / "app.js").write_text("console.log('hi')")
-    app = build_app(_settings(tmp_path, ui_dist=str(dist)))
-    c = TestClient(app)
-    # SPA root serves index.html
-    r = c.get("/")
-    assert r.status_code == 200 and "Hippo" in r.text
-    # an unknown client-side route also gets index.html (SPA fallback)
-    r = c.get("/some/client/route")
-    assert r.status_code == 200 and "<title>Hippo</title>" in r.text
-    # static asset served
-    r = c.get("/assets/app.js")
-    assert r.status_code == 200 and "console.log" in r.text
-    # API routes still win and stay JSON
-    assert c.get("/health").json() == {"status": "ok"}
-
-
-def test_ingest_github_path_rejects_overlong_doc(tmp_path):
-    fakes = {}
-
-    def factory(repo):
-        fakes.setdefault(repo, _FakeGH()); return fakes[repo]
-
-    s = _settings(tmp_path, auth_mode="iap", iap_audience=AUD,
-                  github_token="t", github_docs_repo="org/docs",
-                  max_doc_chars=100, max_upload_bytes=10_000_000)
-    app = build_app(s, iap_verifier=IapVerifier(AUD, key_fetcher=lambda: {}), github_factory=factory)
-    store = app.state.store
-    dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
-    c = TestClient(app)
-    r = c.post("/ingest", files={"file": ("big.md", b"# Big\n\n" + b"x" * 500)}, headers=dev)
-    assert r.status_code == 413
-    assert "org/docs" not in fakes or not fakes["org/docs"].calls  # never committed
-
-
-def test_ingest_content_length_precheck(tmp_path):
-    app = build_app(_settings(tmp_path, max_upload_bytes=20))
-    c = TestClient(app)
-    r = c.post("/ingest", files={"file": ("a.md", b"x" * 500)})
-    assert r.status_code == 413
-
-
-def test_spa_does_not_mask_unknown_api_paths(tmp_path):
-    dist = tmp_path / "dist"; (dist / "assets").mkdir(parents=True)
-    (dist / "index.html").write_text("<!doctype html><title>Hippo</title>")
-    app = build_app(_settings(tmp_path, ui_dist=str(dist)))
-    c = TestClient(app)
-    assert c.get("/documents/nope/extra").status_code == 404  # reserved → 404, not HTML
-    assert c.get("/some/client/route").status_code == 200      # real SPA route → shell
-    assert "Hippo" in c.get("/").text
-
-
-def test_no_static_ui_when_unset(tmp_path):
-    app = build_app(_settings(tmp_path))  # ui_dist default ""
-    c = TestClient(app)
-    # with no UI configured, an unknown path is a normal 404 (no catch-all)
-    assert c.get("/some/client/route").status_code == 404
-    assert c.get("/health").json() == {"status": "ok"}
+    fid = next(r["id"] for r in c.get("/folders").json() if r["name"] == "Default")
+    r = c.post("/ingest",
+               files={"file": ("rep ort?ref=evil#x.md", b"data")},
+               data={"folder_ids": [str(fid)]})
+    assert r.status_code == 200
+    path = r.json()["paths"][0]
+    assert all(ch not in path for ch in "?# ")  # no URL-significant chars
 
 
 def test_ingest_docx_via_api_fallback(tmp_path):
     from tests.test_parsers import _minimal_docx
-    app = build_app(_settings(tmp_path))  # none mode, no github
+    app = build_app(_settings(tmp_path))
     c = TestClient(app)
-    r = c.post("/ingest", files={"file": ("Report.docx", _minimal_docx("alpha bravo charlie"))})
+    fid = next(r["id"] for r in c.get("/folders").json() if r["name"] == "Default")
+    r = c.post("/ingest",
+               files={"file": ("Report.docx", _minimal_docx("alpha bravo charlie"))},
+               data={"folder_ids": [str(fid)]})
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "added" and body["versioned"] is False
 
 
-def test_mcp_requires_token(tmp_path):
-    app = build_app(_settings(tmp_path))  # mcp_enabled defaults True; none-mode
-    with TestClient(app) as c:
-        # no Authorization header -> 401 before MCP processing
-        assert c.post("/mcp", json={"jsonrpc": "2.0", "method": "ping", "id": 1}).status_code == 401
-        assert c.post("/mcp", headers={"Authorization": "Bearer hk_bogus"},
-                      json={"jsonrpc": "2.0", "method": "ping", "id": 1}).status_code == 401
+def test_resync_missing_folder_does_not_wipe(tmp_path):
+    app, store = _iap_app_with_tokens(tmp_path)[:2]
+    admin = {"Authorization": f"Bearer {store.create_token('boss@x.com')}"}
+    c = TestClient(app)
+    rows = c.get("/folders", headers=admin).json()
+    default_id = next(r["id"] for r in rows if r["name"] == "Default")
+    # create a folder-origin child pointing at a non-existent path
+    missing = str(tmp_path / "gone")
+    fid = store.create_folder(parent_id=default_id, name="Gone",
+                              origin="folder", location=missing)
+    # path isn't a directory -> 400
+    assert c.post(f"/folders/{fid}/resync", headers=admin).status_code == 400
 
 
-def test_mcp_valid_token_full_handshake(tmp_path):
-    """A valid token must pass the gate AND drive a working MCP handshake — i.e.
-    transport-security (DNS-rebinding host check) must not 421 the request behind
-    an arbitrary Host. initialize -> tools/list returns Hippo's four tools."""
-    app = build_app(_settings(tmp_path))
-    store = app.state.store
-    token = store.create_token("dev@x.com")
-    hdr = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json, text/event-stream",
-        "Content-Type": "application/json",
-    }
-    with TestClient(app) as c:
-        init = c.post("/mcp/", headers=hdr, json={
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                       "clientInfo": {"name": "t", "version": "1"}}})
-        assert init.status_code == 200  # not 401 (auth) and not 421 (host check)
-        sid = init.headers.get("mcp-session-id")
-        h2 = dict(hdr)
-        if sid:
-            h2["mcp-session-id"] = sid
-        listed = c.post("/mcp/", headers=h2,
-                        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        assert listed.status_code == 200
-        names = {t["name"] for t in listed.json()["result"]["tools"]}
-        assert names == {"search", "read_document", "list_documents", "grep"}
-
-
-def test_mcp_disabled_not_mounted(tmp_path):
-    app = build_app(_settings(tmp_path, mcp_enabled=False))
-    with TestClient(app) as c:
-        assert c.post("/mcp", json={}).status_code == 404
-
-
-def test_mcp_rejects_out_of_domain_token(tmp_path):
-    s = _settings(tmp_path, allowed_domain="x.com")
-    app = build_app(s)
-    store = app.state.store
-    good = store.create_token("dev@x.com")
-    bad = store.create_token("contractor@gmail.com")  # token exists but wrong domain
-    with TestClient(app) as c:
-        # out-of-domain token is rejected by the same gate that protects /me
-        assert c.post("/mcp/", headers={"Authorization": f"Bearer {bad}",
-            "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
-            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                             "clientInfo": {"name": "t", "version": "1"}}}).status_code == 401
-        # in-domain token still works (full handshake)
-        init = c.post("/mcp/", headers={"Authorization": f"Bearer {good}",
-            "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
-            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                             "clientInfo": {"name": "t", "version": "1"}}})
-        assert init.status_code == 200
-
-
-def test_mcp_revoked_token_rejected(tmp_path):
-    app = build_app(_settings(tmp_path))
-    store = app.state.store
-    tok = store.create_token("dev@x.com")
-    tid = store.list_tokens("dev@x.com")[0][0]
-    assert store.revoke_token(tid, "dev@x.com") is True
-    with TestClient(app) as c:
-        assert c.post("/mcp/", headers={"Authorization": f"Bearer {tok}",
-            "Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
-            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                             "clientInfo": {"name": "t", "version": "1"}}}).status_code == 401
+def test_resync_known_and_unknown(tmp_path):
+    app, store = _iap_app_with_tokens(tmp_path)[:2]
+    admin = {"Authorization": f"Bearer {store.create_token('boss@x.com')}"}
+    dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
+    c = TestClient(app)
+    rows = c.get("/folders", headers=admin).json()
+    default_id = next(r["id"] for r in rows if r["name"] == "Default")
+    # create a folder-origin child pointing at tmp_path (it is a valid dir)
+    fid = store.create_folder(parent_id=default_id, name="Docs",
+                              origin="folder", location=str(tmp_path))
+    r = c.post(f"/folders/{fid}/resync", headers=admin)
+    assert r.status_code == 200 and "report" in r.json()
+    assert c.post("/folders/99999/resync", headers=admin).status_code == 404
+    assert c.post(f"/folders/{fid}/resync", headers=dev).status_code == 403

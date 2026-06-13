@@ -1,6 +1,6 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DocDrawer } from "./DocDrawer";
@@ -13,25 +13,21 @@ import {
   stripNoSourcesMarker,
 } from "./citations";
 import Settings from "./Settings";
+import { flattenTree, writableFolders, uploadReducer, type Folder } from "./folders";
 
 type OpenDoc = { id: number; section: string };
 
-type Me = {
-  email: string;
-  role: string;
-  auth_mode: string;
-  upload: { team_repo: boolean; managers_repo: boolean };
-};
+type Me = { email: string; role: string; auth_mode: string };
 
 function toolLabel(name: string | undefined, input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>;
   switch (name) {
     case "search":
-      return `Searching “${i.query ?? "…"}”`;
+      return `Searching "${i.query ?? "…"}"`;
     case "read_document":
       return `Reading document #${i.doc_id ?? "…"}`;
     case "list_documents":
-      return i.query ? `Listing documents matching “${i.query}”` : "Listing documents";
+      return i.query ? `Listing documents matching "${i.query}"` : "Listing documents";
     case "grep":
       return `Scanning sources for ${i.pattern ?? "…"}`;
     default:
@@ -129,13 +125,17 @@ export default function App() {
     transport: new DefaultChatTransport({ api: "/chat" }),
   });
   const [input, setInput] = useState("");
-  const [uploadNote, setUploadNote] = useState("");
   const [docIndex, setDocIndex] = useState<DocIndex>(new Map());
   const [openDoc, setOpenDoc] = useState<OpenDoc | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [needsLogin, setNeedsLogin] = useState(false);
-  const [uploadRepo, setUploadRepo] = useState("team");
   const [view, setView] = useState<"chat" | "settings">("chat");
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [showUpload, setShowUpload] = useState(false);
+  const [up, dispatchUp] = useReducer(uploadReducer,
+    { status: "idle", file: null, dests: [], done: 0, error: null });
+  const [pickFile, setPickFile] = useState<File | null>(null);
+  const [picked, setPicked] = useState<number[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const refreshDocs = useCallback(() => {
@@ -145,9 +145,15 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  const refreshFolders = useCallback(() => {
+    fetch("/folders").then((r) => r.json()).then(setFolders).catch(() => {});
+  }, []);
+
   useEffect(() => {
     refreshDocs();
   }, [refreshDocs]);
+
+  useEffect(() => { refreshFolders(); }, [refreshFolders]);
 
   useEffect(() => {
     fetch("/me").then((r) => {
@@ -162,21 +168,21 @@ export default function App() {
 
   const onOpen = useCallback((id: number, section: string) => setOpenDoc({ id, section }), []);
 
-  async function upload(file: File) {
+  async function runUpload() {
+    if (!pickFile || picked.length === 0) return;
+    dispatchUp({ type: "start", file: pickFile, dests: picked });
     const form = new FormData();
-    form.append("file", file);
-    form.append("repo", uploadRepo);
-    setUploadNote(`adding ${file.name}…`);
+    form.append("file", pickFile);
+    for (const id of picked) form.append("folder_ids", String(id));
     const res = await fetch("/ingest", { method: "POST", body: form });
-    const body = await res.json();
     if (!res.ok) {
-      setUploadNote(`failed: ${body.detail}`);
-    } else if (body.status === "committed") {
-      setUploadNote(`committed ${file.name} to ${body.repo} — searchable after the next sync`);
-    } else {
-      setUploadNote(`added ${file.name} (unversioned) — ${body.chunks} chunks`);
-      refreshDocs();
+      const b = await res.json().catch(() => ({ detail: `error ${res.status}` }));
+      dispatchUp({ type: "error", error: b.detail });
+      return;
     }
+    // server ingests into every destination; advance the bar to done
+    for (let i = 0; i < picked.length; i++) dispatchUp({ type: "progress" });
+    refreshDocs();
   }
 
   if (needsLogin) {
@@ -212,27 +218,41 @@ export default function App() {
           {me && (
             <button className="gear" title="Settings" onClick={() => setView("settings")}>⚙</button>
           )}
-          {me?.upload.managers_repo && (
-            <select value={uploadRepo} onChange={(e) => setUploadRepo(e.target.value)}>
-              <option value="team">team docs</option>
-              <option value="managers">managers docs</option>
-            </select>
-          )}
-          <label className="upload-btn">
+          <button className="upload-btn" onClick={() => { setShowUpload(true); dispatchUp({ type: "reset" }); }}>
             Add doc
-            <input
-              type="file"
-              hidden
-              accept=".md,.markdown,.txt,.html,.htm,.docx"
-              onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
-            />
-          </label>
-          <span className="note">{uploadNote}</span>
+          </button>
         </div>
       </header>
 
+      {showUpload && (
+        <div className="modal-backdrop" onClick={() => setShowUpload(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Add a document</h3>
+            <input type="file" accept=".md,.markdown,.txt,.html,.htm,.docx"
+              onChange={(e) => setPickFile(e.target.files?.[0] ?? null)} />
+            <p>Destination folders</p>
+            <div className="dest-list">
+              {flattenTree(writableFolders(folders)).map((f) => (
+                <label key={f.id} style={{ paddingLeft: f.depth * 12 }}>
+                  <input type="checkbox" checked={picked.includes(f.id)}
+                    onChange={(e) => setPicked((p) =>
+                      e.target.checked ? [...p, f.id] : p.filter((x) => x !== f.id))} />
+                  {f.name} <span className="sec">{f.tier}</span>
+                </label>
+              ))}
+            </div>
+            {up.status === "uploading" && <p>Uploading… {up.done}/{up.dests.length}</p>}
+            {up.status === "error" && <p className="error">{up.error}</p>}
+            {up.status === "done"
+              ? <button onClick={() => setShowUpload(false)}>Done</button>
+              : <button disabled={!pickFile || picked.length === 0 || up.status === "uploading"}
+                  onClick={runUpload}>Upload</button>}
+          </div>
+        </div>
+      )}
+
       {view === "settings" && me ? (
-        <Settings role={me.role as "developer" | "manager" | "admin"} onClose={() => setView("chat")} />
+        <Settings role={me.role as "user" | "admin" | "owner"} onClose={() => setView("chat")} />
       ) : (
         <>
           <main>

@@ -55,7 +55,7 @@ def _as_data(text: str) -> str:
 @dataclass
 class HubDeps:
     store: Storage
-    role: str  # developer | manager | admin — filters every tool's retrieval
+    role: str  # user | admin | owner — filters every tool's retrieval
 
 
 def build_agent(model) -> Agent[HubDeps, str]:

@@ -25,7 +25,7 @@ def _store(settings: Settings) -> tuple[Storage, Ingestor]:
     return store, ing
 
 
-role_app = typer.Typer(help="Manage user roles (developer | manager | admin).")
+role_app = typer.Typer(help="Manage user roles (user | admin | owner).")
 app.add_typer(role_app, name="role")
 token_app = typer.Typer(help="Personal access tokens for MCP/API clients.")
 app.add_typer(token_app, name="token")
@@ -90,13 +90,18 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
     enricher = ing.enricher
 
     def run_all() -> None:
-        folders = [Path(folder)] if folder else [Path(loc) for _, kind, loc, _access in store.list_sources(role="admin") if kind == "folder"]
+        folders = ([Path(folder)] if folder
+                   else [Path(f.location) for f in store.list_folders(role="owner")
+                         if f.origin == "folder" and f.location])
         if not folders:
             typer.echo("no sources registered; run: hippo sync <folder>")
             raise typer.Exit(1)
+        default_root = next(
+            f.id for f in store.list_folders(role="owner")
+            if f.parent_id is None and f.min_role == "user")
         for f in folders:
             report = sync_folder(
-                f, store, max_chars=settings.chunk_max_chars,
+                f, store, parent_id=default_root, max_chars=settings.chunk_max_chars,
                 overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
                 max_doc_chars=settings.max_doc_chars,
             )
@@ -106,7 +111,9 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
     if watch:
         from watchfiles import watch as fswatch
 
-        targets = [folder] if folder else [loc for _, kind, loc, _access in store.list_sources(role="admin") if kind == "folder"]
+        targets = ([folder] if folder
+                   else [f.location for f in store.list_folders(role="owner")
+                         if f.origin == "folder" and f.location])
         typer.echo(f"watching {targets} (ctrl-c to stop)")
         for _changes in fswatch(*targets):
             run_all()
@@ -114,11 +121,15 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
 
 @app.command()
 def add(file: str):
-    """Ingest a single file."""
+    """Ingest a single file into the Default folder."""
     settings = Settings()
-    _, ing = _store(settings)
-    res = ing.ingest_file(Path(file), source_type="upload")
-    typer.echo(f"{res.path}: {res.status} ({res.chunks} chunks)" + (f" error: {res.error}" if res.error else ""))
+    store, ing = _store(settings)
+    default_root = next(
+        f.id for f in store.list_folders(role="owner")
+        if f.parent_id is None and f.min_role == "user")
+    res = ing.ingest_file(Path(file), source_type="upload", folder_id=default_root)
+    typer.echo(f"{res.path}: {res.status} ({res.chunks} chunks)"
+               + (f" error: {res.error}" if res.error else ""))
     if res.status == "failed":
         raise typer.Exit(1)
 
@@ -128,7 +139,7 @@ def search(query: str, top_k: int = 5):
     """Run a hybrid search directly (debugging aid)."""
     settings = Settings()
     store, _ = _store(settings)
-    for hit in store.search_hybrid(query, top_k=top_k, role="admin"):
+    for hit in store.search_hybrid(query, top_k=top_k, role="owner"):
         typer.echo(f"{hit.score:.4f}  {hit.path}  [{hit.heading_path}]")
         typer.echo(f"        {hit.text[:120]!r}")
 
@@ -154,7 +165,7 @@ def mcp():
 
     settings = Settings()
     store, _ = _store(settings)
-    _mcp_role.set("admin")  # local owner
+    _mcp_role.set("owner")  # local owner
     build_mcp_server(store, require_auth=False).run(transport="stdio")
 
 
@@ -244,7 +255,7 @@ def eval(golden_file: str, top_k: int = 5):
     cases = yaml.safe_load(Path(golden_file).read_text())
     hits = 0
     for case in cases:
-        results = store.search_hybrid(case["question"], top_k=top_k, role="admin")
+        results = store.search_hybrid(case["question"], top_k=top_k, role="owner")
         found = any(case["expect_path"] in r.path for r in results)
         hits += found
         typer.echo(f"{'PASS' if found else 'MISS'}  {case['question']}")

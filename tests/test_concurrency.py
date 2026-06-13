@@ -15,6 +15,9 @@ def test_concurrent_read_write_does_not_corrupt(tmp_path):
     con = connect(tmp_path / "t.db", embedding_dim=16)
     store = Storage(con, FakeEmbedder(dim=16))
     errors: list[str] = []
+    folder_id = con.execute(
+        "SELECT id FROM folders WHERE min_role='user' AND parent_id IS NULL"
+    ).fetchone()[0]
 
     def writer(n: int) -> None:
         try:
@@ -24,6 +27,7 @@ def test_concurrent_read_write_does_not_corrupt(tmp_path):
                     source_type="folder", path=f"p{n}-{i}.md", title="t",
                     content="c", content_hash=f"h{n}-{i}", chunks=ch,
                     embed_inputs=[c.text for c in ch],
+                    folder_id=folder_id,
                 )
         except Exception as e:  # noqa: BLE001
             errors.append(repr(e))
@@ -31,9 +35,9 @@ def test_concurrent_read_write_does_not_corrupt(tmp_path):
     def reader(n: int) -> None:
         try:
             for _ in range(30):
-                store.search_hybrid("telegram webhook", top_k=5, role="admin")
-                store.list_documents(role="admin")
-                store.grep("webhook", limit=5, role="admin")
+                store.search_hybrid("telegram webhook", top_k=5, role="owner")
+                store.list_documents(role="owner")
+                store.grep("webhook", limit=5, role="owner")
         except Exception as e:  # noqa: BLE001
             errors.append(repr(e))
 

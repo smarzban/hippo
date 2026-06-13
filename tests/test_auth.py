@@ -20,16 +20,30 @@ def _store(tmp_path):
     return Storage(con, FakeEmbedder(dim=8))
 
 
-def test_resolve_role_first_timer_is_developer(tmp_path):
+def test_resolve_role_first_timer_is_user(tmp_path):
     store = _store(tmp_path)
     settings = Settings(allowed_domain="example.com")
-    assert resolve_role(store, settings, "new.person@example.com") == "developer"
+    assert resolve_role(store, settings, "new.person@example.com") == "user"
 
 
 def test_resolve_role_admin_bootstrap_wins(tmp_path):
     store = _store(tmp_path)
     settings = Settings(allowed_domain="example.com", admin_emails="boss@example.com")
-    assert resolve_role(store, settings, "Boss@Example.com") == "admin"
+    assert resolve_role(store, settings, "Boss@Example.com") == "owner"
+
+
+def test_resolve_role_defaults_to_user_and_bootstraps_owner(tmp_path):
+    from hippo.config import Settings
+    from hippo.db import connect
+    from hippo.embeddings import FakeEmbedder
+    from hippo.storage import Storage
+    from hippo.auth import resolve_role
+
+    con = connect(tmp_path / "t.db", embedding_dim=32)
+    store = Storage(con, FakeEmbedder(dim=32))
+    s = Settings(_env_file=None, admin_emails="boss@x.com")
+    assert resolve_role(store, s, "newbie@x.com") == "user"
+    assert resolve_role(store, s, "boss@x.com") == "owner"
 
 
 def test_resolve_role_out_of_domain_raises(tmp_path):
