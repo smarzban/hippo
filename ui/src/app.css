@@ -513,6 +513,17 @@ form button {
 }
 form button:disabled { opacity: 0.45; cursor: default; }
 
+/* The first-run setup form is a stacked block, not the chat composer row. */
+.setup-form {
+  display: block;
+  border-top: 0;
+  padding: 0;
+  background: transparent;
+}
+.setup-form input,
+.setup-form select { flex: 0 0 auto; }
+.setup-form button { width: 100%; }
+
 /* ---------- upload modal ---------- */
 .modal-backdrop {
   position: fixed;

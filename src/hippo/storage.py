@@ -397,6 +397,20 @@ class Storage:
         with self._lock:
             return list(self.con.execute("SELECT email, role FROM users ORDER BY email"))
 
+    def get_profile(self, email: str) -> dict | None:
+        """{email, name, role} for a user, or None. Used by /me and PATCH /me."""
+        email = _norm_email(email)
+        with self._lock:
+            row = self.con.execute(
+                "SELECT email, name, role FROM users WHERE email=?", (email,)).fetchone()
+        return {"email": row[0], "name": row[1], "role": row[2]} if row else None
+
+    def set_name(self, email: str, name: str) -> None:
+        """Update a user's display name. No-op if the user does not exist."""
+        email = _norm_email(email)
+        with self._lock, self.con:
+            self.con.execute("UPDATE users SET name=? WHERE email=?", (name, email))
+
     LOCKOUT_MAX_FAILURES = 5
     LOCKOUT_MINUTES = 15
 
@@ -426,6 +440,22 @@ class Storage:
                     "locked_until=NULL WHERE id=?",
                     (password_hash, row[0]),
                 )
+
+    def create_user(self, email: str, *, role: str, password_hash: str | None = None) -> bool:
+        """Atomically create a user, insert-only. Returns True iff THIS call created
+        the row; False if the email already existed (no overwrite). Race-safe: the
+        ON CONFLICT DO NOTHING + rowcount check happens inside the lock, so concurrent
+        creates can't both succeed (callers map False -> 409)."""
+        email = _norm_email(email)
+        if role not in VALID_ROLES:
+            raise ValueError(f"invalid role {role!r}; expected one of {VALID_ROLES}")
+        with self._lock, self.con:
+            cur = self.con.execute(
+                "INSERT INTO users(email, role, password_hash) VALUES (?,?,?) "
+                "ON CONFLICT(email) DO NOTHING",
+                (email, role, password_hash),
+            )
+            return cur.rowcount > 0
 
     def get_credentials(self, email: str) -> dict | None:
         """Return {user_id, email, role, password_hash, failed_logins, locked_until}
