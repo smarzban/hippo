@@ -9,8 +9,9 @@ from the indexed docs, with `[path > section]` citations. Personal-first, team-r
 - `docs/superpowers/specs/2026-06-11-knowledge-hub-decisions.md` — decision log (why; 9 ADRs incl. all rejected alternatives)
 - `docs/superpowers/plans/2026-06-11-knowledge-hub.md` — the 15-task build plan (code has a few post-plan hardening fixes the plan text doesn't show)
 - `docs/superpowers/plans/2026-06-12-roadmap.md` — roadmap / action list (post-v1 hardening + features)
-- `docs/superpowers/plans/2026-06-13-sp1-roles-and-folders.md` — SP1 implementation plan (roles & folder tree)
-- `docs/superpowers/plans/2026-06-13-sp2-password-auth.md` — **SP2 implementation plan** (password auth; current branch)
+- `docs/superpowers/plans/2026-06-13-sp1-roles-and-folders.md` — SP1 plan (roles & folder tree; merged PR #11)
+- `docs/superpowers/plans/2026-06-13-sp2-password-auth.md` — SP2 plan (password auth; merged PR #12)
+- `docs/superpowers/plans/2026-06-13-sp3-setup-wizard.md` — SP3 plan (setup wizard & config store; merged PR #13)
 
 Naming: the project was "knowledgeHub" during design (docs keep that name); the product/package is **hippo** (from hippocampus).
 
@@ -95,7 +96,7 @@ Token secret shown once after POST; list views show metadata only.
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (275 tests, <7s, ZERO network — must stay that way)
+uv run pytest                      # full suite (285 tests, <7s, ZERO network — must stay that way)
 cd ui && npm test                  # 19 vitest (folders + citations + auth suites)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all synced folders
 uv run hippo serve                 # API :8000
@@ -147,24 +148,38 @@ FastMCP at /mcp with bearer-token auth + role filtering, `hippo mcp` stdio comma
 branch `build/mcp-server` (PR pending). Roadmap item 7 (Slack bot: Socket Mode, role-filtered Q&A,
 DM+channel @mention, thread-aware history) implemented on branch `build/slack-integration` (PR pending).
 Roadmap item 9 (Settings UI: gear toggle, role-gated tabs, self-service tokens, admin sources/users/status)
-implemented on branch `build/settings-ui` (PR pending). **SP1 (roles & content-folder model):**
-roles renamed user/admin/owner; flat sources replaced by a folder adjacency tree with rank-filtered
-retrieval; surrogate-keyed users+tokens; /folders CRUD API; multi-destination /ingest; React Folders
-tab + role-scoped upload modal; pure roles.py module; legacy-DB guard. Implemented on branch
-`build/sp1-roles-and-folders` (PR pending). **SP2 (built-in password auth):** 4th auth mode
-`password` (email+password, argon2id, lockout 5 fails/15 min, 7-day session), POST /auth/login +
-/auth/logout + GET /auth/config, self-service POST /me/password, admin reset POST /users/{email}/password,
-break-glass `hippo user set-password` CLI, React login screen + password-change + admin-reset UI.
-Implemented on branch `build/sp2-password-auth` (PR pending). **SP3 (first-run setup wizard &
-config store):** DB `config` table; `Config` overlay resolver (DB wins for DB_OVERRIDABLE keys;
-secrets env-only); `setup_token` field; `GET /setup/status` + `POST /setup` (token-gated, once;
-wizard flow: auth mode → owner → folder names → models); `GET /config` + `PUT /config` (owner-only;
-secrets blocked; embedding reindex guard; auth-mode anti-lockout `_validate_auth_switch`); live
-`chat_model` per `/chat` via `_live_agent()`; operational config resolved at construction from DB
-overlay; SessionMiddleware once if `secret_key`; `/settings/status` reports effective overlay values
-+ `setup_complete`; React first-run wizard (6 steps, setup.ts pure logic, Vitest-covered); owner-only
-Instance Settings tab. Implemented on branch `build/sp3-setup-wizard`. **PRODUCTIZATION EPIC
-(SP1+SP2+SP3) COMPLETE.** 275 pytest + 19 vitest, eval 4/4 on seed fixtures, UI builds clean.
+implemented on branch `build/settings-ui` (PR pending).
+
+**PRODUCTIZATION EPIC (SP1+SP2+SP3) — COMPLETE, all merged to main 2026-06-13.** Each PR ran the loop
+plan→subagent-build→Codex+Opus review-on-PR→fix-with-regression-tests→squash-merge; each surfaced and
+fixed one real access-control issue in review.
+- **SP1 — roles & content-folder model (PR #11, `c074935`):** roles renamed user/admin/owner (pure
+  `roles.py` owns the rank rule); flat sources replaced by a folder adjacency tree with rank-filtered
+  retrieval; surrogate-keyed users+tokens; /folders CRUD API + `require_owner`; multi-destination
+  /ingest write-gated by `can_write`; React Folders tab + role-scoped upload modal; legacy-DB guard.
+  Review fix: /folders PATCH/DELETE/resync now tier-check the target folder (was admin-floor only).
+- **SP2 — built-in password auth (PR #12, `ae16979`):** 4th auth mode `password` (email+password,
+  argon2id, lockout 5/15min, 7-day session), POST /auth/login + /auth/logout + GET /auth/config,
+  self-service POST /me/password, admin reset POST /users/{email}/password, break-glass
+  `hippo user set-password` CLI, React login screen + password-change + admin-reset UI. No default
+  credentials; generic 401s; hashes never returned. Review fix: admin reset uses the EFFECTIVE role
+  (a HIPPO_ADMIN_EMAILS user is owner-tier).
+- **SP3 — first-run setup wizard & config store (PR #13, `85d21cd`):** DB `config` table; `Config`
+  overlay resolver (DB wins ONLY for `DB_OVERRIDABLE`; **secrets env-only, never DB-sourced/returned/
+  writable**); `setup_token` field; `GET /setup/status` + `POST /setup` (token-gated via
+  `compare_digest`, atomic `claim_setup`, 409-after); `GET/PUT /config` (owner-only; non-operational
+  keys rejected; embedding reindex guard; auth-mode anti-lockout `_validate_auth_switch` with mode
+  prereqs); live `chat_model` per `/chat` via `_live_agent()`; other operational keys resolved at
+  construction from the overlay (change → restart); SessionMiddleware once if `secret_key`;
+  `/settings/status` reports effective overlay values + `setup_complete`; React first-run wizard
+  (`setup.ts` pure logic, Vitest) + owner-only Instance Settings tab. Review fix: `allowed_domain`
+  override now gates role resolution live; oidc/iap switch/setup prereqs enforced; oidc exchange uses
+  effective client_id/public_url.
+  **Caveat (by design):** `none` mode is open pre-setup (dev-only, emits a non-localhost startup
+  warning) — a secure first-run uses `oidc`/`iap` env (IdP-gated even pre-setup) or keeps the box
+  private until the wizard sets `password` mode.
+
+**285 pytest + 23 vitest, eval 4/4 on seed fixtures, UI builds clean.**
 
 **Active plan:** `docs/superpowers/plans/2026-06-13-sp3-setup-wizard.md` — SP3 complete. Next: scale (Postgres+pgvector), MCP client/connectors, deploy.
 
