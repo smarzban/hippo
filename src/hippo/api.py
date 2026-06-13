@@ -21,7 +21,8 @@ from starlette.responses import JSONResponse, RedirectResponse
 
 from .agent import HubDeps, build_agent
 from .mcp_server import _mcp_role, build_mcp_server
-from .auth import AuthError, AuthenticatedUser, IapVerifier, check_domain, resolve_role, validate_google_id_token
+from .auth import (AuthError, AuthenticatedUser, IapVerifier, check_domain,
+                   hash_password, resolve_role, validate_google_id_token, verify_password)
 from .config import Settings
 from .db import connect
 from .embeddings import build_embedder
@@ -196,6 +197,16 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             except AuthError as e:
                 log.warning("auth denied (iap): %s", e)
                 raise HTTPException(status_code=401, detail=str(e))
+        if settings.auth_mode == "password":
+            uid = request.session.get("user_id")
+            if not uid:
+                raise HTTPException(status_code=401, detail="not signed in")
+            found = store.get_user_by_id(uid)
+            if found is None:
+                request.session.clear()
+                raise HTTPException(status_code=401, detail="not signed in")
+            email, _role = found
+            return _user_for(email)   # re-resolves role (bootstrap/admin_emails honored)
         email = request.session.get("email", "")  # oidc: session cookie (Task 10)
         if not email:
             log.warning("auth denied: no session")
@@ -265,6 +276,44 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         async def auth_logout(request: Request):
             request.session.clear()
             return RedirectResponse("/")
+
+    if settings.auth_mode == "password":
+        if not settings.secret_key:
+            raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=password")
+        app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
+                           https_only=settings.public_url.startswith("https"),
+                           same_site="lax")
+
+        @app.post("/auth/login")
+        async def auth_login_password(request: Request):
+            body = await request.json()
+            email = (body.get("email") or "").strip().lower()
+            password = body.get("password") or ""
+            creds = store.get_credentials(email)
+            # Generic failure for missing user / no local password / bad password.
+            generic = HTTPException(status_code=401, detail="invalid email or password")
+            if store.is_locked(email):
+                raise HTTPException(status_code=401,
+                    detail=f"account locked — try again in up to {store.LOCKOUT_MINUTES} minutes")
+            if creds is None or not creds["password_hash"]:
+                # still do nothing leak-y; no counter to bump on a non-user
+                raise generic
+            if not verify_password(creds["password_hash"], password):
+                store.record_failed_login(email)
+                raise generic
+            store.reset_login_state(email)
+            request.session["user_id"] = creds["user_id"]
+            user = _user_for(email)
+            return {"email": user.email, "role": user.role}
+
+        @app.post("/auth/logout")
+        async def auth_logout_password(request: Request):
+            request.session.clear()
+            return {"ok": True}
+
+    @app.get("/auth/config")
+    async def auth_config():
+        return {"auth_mode": settings.auth_mode}
 
     @app.get("/health")
     async def health(_=Depends(verify_request)):
