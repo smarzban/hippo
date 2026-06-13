@@ -542,7 +542,12 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         creds = store.get_credentials(target)
         if creds is None:
             raise HTTPException(status_code=404, detail="user not found")
-        if rank(creds["role"]) > rank(user.role):
+        # Compare against the target's EFFECTIVE role: a HIPPO_ADMIN_EMAILS user is
+        # force-promoted to owner at request time (resolve_role), so their stored
+        # role may understate their power. Using the stored role would let a rank-1
+        # admin reset (and hijack/lock out) a bootstrap owner's local credential.
+        target_role = "owner" if target in settings.admin_email_list else creds["role"]
+        if rank(target_role) > rank(user.role):
             raise HTTPException(status_code=403, detail="cannot reset a user above your tier")
         new_pw = secrets.token_urlsafe(12)   # >= MIN_PASSWORD_LEN; shown once
         store.set_password(target, hash_password(new_pw))

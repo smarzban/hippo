@@ -103,3 +103,18 @@ def test_admin_reset_requires_admin(tmp_path):
     c = TestClient(app)
     c.post("/auth/login", json={"email": "dev@x.com", "password": "p"})  # rank user
     assert c.post("/users/owner@x.com/password", json={}).status_code == 403
+
+
+def test_admin_cannot_reset_bootstrap_owner_by_stored_role(tmp_path):
+    """Regression (PR #12 review): the tier check must use the EFFECTIVE role. A
+    HIPPO_ADMIN_EMAILS user is owner at request time even if their stored role is
+    lower, so a rank-1 admin must not be able to reset their local password."""
+    app = build_app(_settings(tmp_path, admin_emails="boss@x.com"))
+    store = app.state.store
+    # boss is a bootstrap owner but only has a 'user' stored role + a local password
+    store.set_password("boss@x.com", hash_password("boss-pass"), role="user")
+    store.set_password("mgr@x.com", hash_password("mgr-pass"), role="admin")
+    c = TestClient(app)
+    c.post("/auth/login", json={"email": "mgr@x.com", "password": "mgr-pass"})  # rank admin
+    # stored role is 'user' (< admin) but effective role is owner → must be 403
+    assert c.post("/users/boss@x.com/password", json={}).status_code == 403
