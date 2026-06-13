@@ -81,7 +81,12 @@ export function processCitations(
 ): { processed: string; sources: Source[] } {
   const sources: Source[] = [];
   const keyToNum = new Map<string, number>();
-  const processed = text.replace(CITE_RE, (_m, a: string, b: string) => {
+  // Citations the model emits back-to-back ([a > b][c > d]) would otherwise produce
+  // two adjacent backtick-wrapped sentinels (`⟦1⟧``⟦2⟧`); CommonMark reads the middle
+  // `` as one span and the marker is lost. Insert a space between sentinels whose
+  // source citations were adjacent so each survives as its own inline-code node.
+  let prevEnd = -1;
+  const processed = text.replace(CITE_RE, (m: string, a: string, b: string, offset: number) => {
     const inner = (a ?? b ?? "").trim();
     const r = resolveCitation(inner, docIndex);
     const key = `${r.docId ?? r.title}::${r.scrollTarget}`;
@@ -91,7 +96,9 @@ export function processCitations(
       keyToNum.set(key, num);
       sources.push({ num, ...r });
     }
-    return "`⟦" + num + "⟧`";
+    const sep = offset === prevEnd ? " " : "";
+    prevEnd = offset + m.length;
+    return sep + "`⟦" + num + "⟧`";
   });
   return { processed, sources };
 }
