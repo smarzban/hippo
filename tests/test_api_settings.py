@@ -27,12 +27,12 @@ def test_users_list_and_set_role_admin_only(tmp_path):
     store.ensure_user("dev@x.com")
     admin, dev = _bearer(store, "boss@x.com"), _bearer(store, "dev@x.com")
     c = TestClient(app)
-    # developer is forbidden
+    # user-tier is forbidden
     assert c.get("/users", headers=dev).status_code == 403
-    # admin lists + promotes
+    # owner (bootstrap admin) lists + promotes
     assert c.get("/users", headers=admin).status_code == 200
-    assert c.put("/users/dev@x.com/role", json={"role": "manager"}, headers=admin).status_code == 200
-    assert any(u["email"] == "dev@x.com" and u["role"] == "manager"
+    assert c.put("/users/dev@x.com/role", json={"role": "admin"}, headers=admin).status_code == 200
+    assert any(u["email"] == "dev@x.com" and u["role"] == "admin"
                for u in c.get("/users", headers=admin).json())
 
 
@@ -41,8 +41,8 @@ def test_set_role_rejects_invalid_and_self_demotion(tmp_path):
     admin = _bearer(store, "boss@x.com")
     c = TestClient(app)
     assert c.put("/users/dev@x.com/role", json={"role": "wizard"}, headers=admin).status_code == 400
-    # anti-lockout: admin cannot demote their own account
-    assert c.put("/users/boss@x.com/role", json={"role": "developer"}, headers=admin).status_code == 400
+    # anti-lockout: owner cannot demote their own account
+    assert c.put("/users/boss@x.com/role", json={"role": "user"}, headers=admin).status_code == 400
 
 
 def test_tokens_self_service_and_secret_once(tmp_path):
@@ -59,14 +59,14 @@ def test_tokens_self_service_and_secret_once(tmp_path):
     assert all("token" not in t and "hk_" not in str(t.values()) for t in listed)
 
 
-def test_tokens_cross_user_revoke_blocked_for_dev_allowed_for_admin(tmp_path):
+def test_tokens_cross_user_revoke_blocked_for_user_allowed_for_admin(tmp_path):
     app, store = _app(tmp_path)
     dev, admin = _bearer(store, "dev@x.com"), _bearer(store, "boss@x.com")
     c = TestClient(app)
     other_id = int(c.post("/tokens", json={"name": "x"}, headers=admin).json()["id"])  # admin's token
-    # developer cannot delete someone else's token
+    # user-tier cannot delete someone else's token
     assert c.delete(f"/tokens/{other_id}", headers=dev).status_code == 404
-    # admin can
+    # admin (owner) can
     assert c.delete(f"/tokens/{other_id}", headers=admin).status_code == 200
 
 
@@ -92,34 +92,13 @@ def test_developer_can_revoke_own_token(tmp_path):
 def test_users_shows_effective_role_and_blocks_bootstrap_demotion(tmp_path):
     app, store = _app(tmp_path, admin_emails="boss@x.com,boss2@x.com")
     boss2 = _bearer(store, "boss2@x.com")
-    store.ensure_user("boss@x.com")   # stored 'developer', but a bootstrap admin
+    store.ensure_user("boss@x.com")   # stored 'user', but a bootstrap admin
     c = TestClient(app)
     users = {u["email"]: u["role"] for u in c.get("/users", headers=boss2).json()}
-    assert users["boss@x.com"] == "admin"   # EFFECTIVE role shown, not stale 'developer'
-    # another admin can't demote a bootstrap admin (resolve_role re-promotes => no-op/lie)
-    assert c.put("/users/boss@x.com/role", json={"role": "developer"},
+    assert users["boss@x.com"] == "owner"   # EFFECTIVE role shown, not stale stored value
+    # another owner can't demote a bootstrap admin (resolve_role re-promotes => no-op/lie)
+    assert c.put("/users/boss@x.com/role", json={"role": "user"},
                  headers=boss2).status_code == 400
-
-
-def test_resync_missing_folder_does_not_wipe(tmp_path):
-    app, store = _app(tmp_path)
-    admin = _bearer(store, "boss@x.com")
-    missing = tmp_path / "gone"
-    sid = store.register_source("folder", str(missing), access="everyone")
-    c = TestClient(app)
-    # path isn't a directory -> 400, NOT a sync that would delete the source's docs
-    assert c.post(f"/sources/{sid}/resync", headers=admin).status_code == 400
-
-
-def test_resync_known_and_unknown(tmp_path):
-    app, store = _app(tmp_path)
-    admin = _bearer(store, "boss@x.com")
-    sid = store.register_source("folder", str(tmp_path), access="everyone")
-    c = TestClient(app)
-    r = c.post(f"/sources/{sid}/resync", headers=admin)
-    assert r.status_code == 200 and "report" in r.json()
-    assert c.post("/sources/99999/resync", headers=admin).status_code == 404
-    assert c.post(f"/sources/{sid}/resync", headers=_bearer(store, "dev@x.com")).status_code == 403
 
 
 def test_status_admin_only_and_no_secrets(tmp_path):
@@ -129,5 +108,5 @@ def test_status_admin_only_and_no_secrets(tmp_path):
     assert c.get("/settings/status", headers=dev).status_code == 403
     st = c.get("/settings/status", headers=admin).json()
     assert st["auth_mode"] == "iap" and st["chat_model"] == "openai:gpt-5.2"
-    assert set(st["counts"]) == {"documents", "sources", "users"}
+    assert set(st["counts"]) == {"documents", "folders", "users"}
     assert "hk_" not in str(st) and "secret" not in str(st).lower()

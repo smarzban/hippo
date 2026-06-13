@@ -261,14 +261,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.get("/me")
     async def me(user: AuthenticatedUser = Depends(verify_request)):
-        return {
-            "email": user.email, "role": user.role, "auth_mode": settings.auth_mode,
-            "upload": {
-                "team_repo": bool(settings.github_token and settings.github_docs_repo),
-                "managers_repo": bool(settings.github_token and settings.github_managers_repo)
-                                 and user.role in ("manager", "admin"),
-            },
-        }
+        return {"email": user.email, "role": user.role, "auth_mode": settings.auth_mode}
 
     @app.post("/chat")
     async def chat(request: Request, user: AuthenticatedUser = Depends(verify_request)):
@@ -278,8 +271,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         )
 
     @app.post("/ingest")
-    async def ingest(request: Request, file: UploadFile, repo: str = Form("team"),
+    async def ingest(request: Request, file: UploadFile,
+                     folder_ids: list[int] = Form(...),
                      user: AuthenticatedUser = Depends(verify_request)):
+        from .roles import can_write
         cl = request.headers.get("content-length")
         if cl and cl.isdigit() and int(cl) > settings.max_upload_bytes:
             raise HTTPException(status_code=413, detail="file too large")
@@ -287,38 +282,28 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if len(raw_bytes) > settings.max_upload_bytes:
             raise HTTPException(status_code=413, detail="file too large")
         name = _safe_filename(file.filename or "upload.md")
-        if repo == "managers" and user.role not in ("manager", "admin"):
-            raise HTTPException(status_code=403, detail="managers repo requires the manager role")
-        target = settings.github_managers_repo if repo == "managers" else settings.github_docs_repo
-        if settings.github_token and target:
-            text = raw_bytes.decode("utf-8", errors="replace")
-            if settings.max_doc_chars and len(text) > settings.max_doc_chars:
-                raise HTTPException(status_code=413, detail="document too large")
-            gh = github_factory(target)
-            # Content-hash-qualified path: mirrors ingest.py's L4 fix so two different
-            # docs sharing a filename coexist instead of silently overwriting; an
-            # identical re-upload converges on the same path (idempotent update).
-            digest = hashlib.sha256(raw_bytes).hexdigest()[:8]
-            repo_path = f"uploads/{digest}-{name}"
-            try:
-                sha = await run_in_threadpool(
-                    gh.put_file, repo_path, raw_bytes,
-                    f"hippo upload: {name} (by {user.email})")
-            except GitHubError as e:
-                raise HTTPException(status_code=502, detail=str(e))
-            # The doc is now versioned in git; the next repo sync ingests it (spec §1).
-            return {"status": "committed", "repo": target, "path": repo_path, "commit": sha}
-        if repo == "managers":
-            raise HTTPException(status_code=400, detail="managers repo is not configured")
-        # No GitHub configured (personal mode): direct, unversioned ingestion.
-        # Threadpool: ingestion blocks (embeddings + enrichment), and Enricher's
-        # run_sync cannot run on the event loop thread.
         suffix = Path(name).suffix or ".md"
-        result = await run_in_threadpool(ingestor.ingest_bytes, name, raw_bytes, suffix=suffix)
-        if result.status == "failed":
-            raise HTTPException(status_code=422, detail=result.error)
-        return {"path": result.path, "status": result.status,
-                "chunks": result.chunks, "versioned": False}
+        targets = []
+        for fid in folder_ids:
+            f = store.get_folder(fid)
+            if f is None:
+                raise HTTPException(status_code=404, detail=f"folder {fid} not found")
+            if not can_write(user.role, f.min_role, f.origin):
+                raise HTTPException(status_code=403,
+                    detail=f"cannot upload into {f.name!r} (tier or synced-folder lock)")
+            targets.append(f)
+        results = []
+        for f in targets:
+            prefix = store.folder_path(f.id)
+            res = await run_in_threadpool(
+                ingestor.ingest_bytes, name, raw_bytes,
+                folder_id=f.id, path_prefix=prefix, suffix=suffix)
+            if res.status == "failed":
+                raise HTTPException(status_code=422, detail=res.error)
+            results.append({"path": res.path, "chunks": res.chunks})
+        # one document per destination folder
+        return {"status": "added", "paths": [r["path"] for r in results],
+                "results": results, "versioned": False}
 
     @app.get("/documents")
     async def documents(query: str | None = None, user: AuthenticatedUser = Depends(verify_request)):
@@ -430,27 +415,29 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.get("/users")
     async def list_users(user: AuthenticatedUser = Depends(require_admin)):
-        # Show the EFFECTIVE role: HIPPO_ADMIN_EMAILS always resolve to admin at
+        # Show the EFFECTIVE role: HIPPO_ADMIN_EMAILS always resolve to owner at
         # request time (resolve_role), so reflect that here rather than the (possibly
-        # stale "developer") stored value — otherwise the list misrepresents power.
+        # stale stored value) — otherwise the list misrepresents power.
         admins = settings.admin_email_list
-        return [{"email": e, "role": "admin" if e in admins else r}
+        return [{"email": e, "role": "owner" if e in admins else r}
                 for e, r in store.list_users()]
 
     @app.put("/users/{email}/role")
     async def set_user_role(email: str, body: RoleIn,
                             user: AuthenticatedUser = Depends(require_admin)):
+        from .roles import VALID_ROLES, rank as _rank
         target = email.strip().lower()
-        valid_roles = {"developer", "manager", "admin"}
-        if body.role not in valid_roles:
+        if body.role not in VALID_ROLES:
             raise HTTPException(status_code=400,
-                detail=f"invalid role {body.role!r}; expected one of {sorted(valid_roles)}")
-        if target == user.email and body.role != "admin":
-            raise HTTPException(status_code=400,
-                detail="you can't remove your own admin role")
+                detail=f"invalid role {body.role!r}; expected one of {list(VALID_ROLES)}")
+        if _rank(body.role) > _rank(user.role):
+            raise HTTPException(status_code=403,
+                detail="you cannot grant a role above your own")
+        if target == user.email and _rank(body.role) < _rank(user.role):
+            raise HTTPException(status_code=400, detail="you can't lower your own role")
         # A HIPPO_ADMIN_EMAILS user is force-promoted by resolve_role every request,
         # so demoting them here is a no-op that would make /users lie. Refuse it.
-        if target in settings.admin_email_list and body.role != "admin":
+        if target in settings.admin_email_list and body.role != "owner":
             raise HTTPException(status_code=400,
                 detail="this user is a bootstrap admin (HIPPO_ADMIN_EMAILS); "
                        "remove them from that env var to change their role")
@@ -461,7 +448,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     async def list_tokens_route(all_users: bool = Query(False, alias="all"),
                                 user: AuthenticatedUser = Depends(verify_request)):
         if all_users:
-            if user.role != "admin":
+            if rank(user.role) < 1:  # admin or owner
                 raise HTTPException(status_code=403, detail="admin only")
             return [{"id": i, "email": e, "name": n, "created_at": c, "last_used_at": lu}
                     for i, e, n, c, lu in store.list_all_tokens()]
@@ -477,7 +464,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.delete("/tokens/{token_id}")
     async def delete_token(token_id: int, user: AuthenticatedUser = Depends(verify_request)):
-        ok = (store.revoke_token_any(token_id) if user.role == "admin"
+        ok = (store.revoke_token_any(token_id) if rank(user.role) >= 1
               else store.revoke_token(token_id, user.email))
         if not ok:
             raise HTTPException(status_code=404, detail="token not found")
@@ -496,8 +483,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             "mcp_enabled": settings.mcp_enabled,
             "slack_enabled": settings.slack_enabled,
             "counts": {
-                "documents": len(store.list_documents(role="admin")),
-                "sources": len(store.list_sources(role="admin")),
+                "documents": len(store.list_documents(role="owner")),
+                "folders": len(store.list_folders(role="owner")),
                 "users": len(store.list_users()),
             },
         }
