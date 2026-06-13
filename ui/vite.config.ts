@@ -11,6 +11,9 @@ export default defineConfig({
       "/ingest": "http://127.0.0.1:8000",
       "/documents": "http://127.0.0.1:8000",
       "/sources": "http://127.0.0.1:8000",
+      "/users": "http://127.0.0.1:8000",
+      "/tokens": "http://127.0.0.1:8000",
+      "/settings": "http://127.0.0.1:8000",
     },
   },
 });

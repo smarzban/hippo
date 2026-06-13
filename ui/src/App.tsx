@@ -5,6 +5,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DocDrawer } from "./DocDrawer";
 import { buildDocIndex, type DocIndex, type DocMeta, MARKER_RE, processCitations } from "./citations";
+import Settings from "./Settings";
 
 type OpenDoc = { id: number; section: string };
 
@@ -126,6 +127,7 @@ export default function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [needsLogin, setNeedsLogin] = useState(false);
   const [uploadRepo, setUploadRepo] = useState("team");
+  const [view, setView] = useState<"chat" | "settings">("chat");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const refreshDocs = useCallback(() => {
@@ -199,6 +201,9 @@ export default function App() {
               {me.auth_mode === "oidc" && <> · <a href="/auth/logout">sign out</a></>}
             </span>
           )}
+          {me && (
+            <button className="gear" title="Settings" onClick={() => setView("settings")}>⚙</button>
+          )}
           {me?.upload.managers_repo && (
             <select value={uploadRepo} onChange={(e) => setUploadRepo(e.target.value)}>
               <option value="team">team docs</option>
@@ -218,93 +223,99 @@ export default function App() {
         </div>
       </header>
 
-      <main>
-        {messages.length === 0 && (
-          <div className="empty">
-            <p>Ask me anything that lives in the team docs.</p>
-            <div className="suggestions">
-              {SUGGESTIONS.map((s) => (
-                <button key={s} onClick={() => sendMessage({ text: s })}>
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+      {view === "settings" && me ? (
+        <Settings role={me.role as "developer" | "manager" | "admin"} onClose={() => setView("chat")} />
+      ) : (
+        <>
+          <main>
+            {messages.length === 0 && (
+              <div className="empty">
+                <p>Ask me anything that lives in the team docs.</p>
+                <div className="suggestions">
+                  {SUGGESTIONS.map((s) => (
+                    <button key={s} onClick={() => sendMessage({ text: s })}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
-        {messages.map((m) => (
-          <div key={m.id} className={`msg ${m.role}`}>
-            {m.parts.map((part, i) => {
-              if (part.type === "text") {
-                return m.role === "user" ? (
-                  <p key={i} className="user-text">
-                    {part.text}
-                  </p>
-                ) : (
-                  <AssistantText key={i} text={part.text} docIndex={docIndex} onOpen={onOpen} />
-                );
-              }
-              if (part.type === "reasoning" && part.text.trim()) {
-                return (
-                  <details key={i} className="reasoning">
-                    <summary>thinking</summary>
-                    <p>{part.text}</p>
-                  </details>
-                );
-              }
-              if (part.type.startsWith("tool-") || part.type === "dynamic-tool") {
-                const p = part as {
-                  type: string;
-                  state?: string;
-                  input?: unknown;
-                  toolName?: string;
-                };
-                const name =
-                  part.type === "dynamic-tool" ? p.toolName : part.type.replace("tool-", "");
-                const pending = p.state !== "output-available" && p.state !== "output-error";
-                return (
-                  <div key={i} className={`tool ${pending ? "pending" : "done"}`}>
-                    {toolLabel(name, p.input)}
-                  </div>
-                );
-              }
-              return null;
-            })}
-          </div>
-        ))}
+            {messages.map((m) => (
+              <div key={m.id} className={`msg ${m.role}`}>
+                {m.parts.map((part, i) => {
+                  if (part.type === "text") {
+                    return m.role === "user" ? (
+                      <p key={i} className="user-text">
+                        {part.text}
+                      </p>
+                    ) : (
+                      <AssistantText key={i} text={part.text} docIndex={docIndex} onOpen={onOpen} />
+                    );
+                  }
+                  if (part.type === "reasoning" && part.text.trim()) {
+                    return (
+                      <details key={i} className="reasoning">
+                        <summary>thinking</summary>
+                        <p>{part.text}</p>
+                      </details>
+                    );
+                  }
+                  if (part.type.startsWith("tool-") || part.type === "dynamic-tool") {
+                    const p = part as {
+                      type: string;
+                      state?: string;
+                      input?: unknown;
+                      toolName?: string;
+                    };
+                    const name =
+                      part.type === "dynamic-tool" ? p.toolName : part.type.replace("tool-", "");
+                    const pending = p.state !== "output-available" && p.state !== "output-error";
+                    return (
+                      <div key={i} className={`tool ${pending ? "pending" : "done"}`}>
+                        {toolLabel(name, p.input)}
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
+              </div>
+            ))}
 
-        {status === "submitted" && <div className="thinking">&bull;&bull;&bull;</div>}
-        {error && (
-          <div className="error">
-            {/limit/i.test(error.message)
-              ? "I reached my research limit for this question — it needed more lookups than I'm allowed per answer. Try narrowing it, or ask about one thing at a time."
-              : `Something went wrong: ${error.message}`}
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </main>
+            {status === "submitted" && <div className="thinking">&bull;&bull;&bull;</div>}
+            {error && (
+              <div className="error">
+                {/limit/i.test(error.message)
+                  ? "I reached my research limit for this question — it needed more lookups than I'm allowed per answer. Try narrowing it, or ask about one thing at a time."
+                  : `Something went wrong: ${error.message}`}
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </main>
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!input.trim()) return;
-          sendMessage({ text: input });
-          setInput("");
-        }}
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask Hippo…"
-          autoFocus
-        />
-        <button type="submit" disabled={status !== "ready"}>
-          Send
-        </button>
-      </form>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!input.trim()) return;
+              sendMessage({ text: input });
+              setInput("");
+            }}
+          >
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Ask Hippo…"
+              autoFocus
+            />
+            <button type="submit" disabled={status !== "ready"}>
+              Send
+            </button>
+          </form>
 
-      {openDoc && (
-        <DocDrawer docId={openDoc.id} section={openDoc.section} onClose={() => setOpenDoc(null)} />
+          {openDoc && (
+            <DocDrawer docId={openDoc.id} section={openDoc.section} onClose={() => setOpenDoc(null)} />
+          )}
+        </>
       )}
     </div>
   );

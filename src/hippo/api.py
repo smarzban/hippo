@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 log = logging.getLogger("hippo.auth")
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -81,6 +81,14 @@ class SourceIn(BaseModel):
     kind: str = "folder"
     location: str
     access: Literal["everyone", "managers"] | None = None
+
+
+class RoleIn(BaseModel):
+    role: str  # validated manually in the route handler so we return 400 (not 422)
+
+
+class TokenIn(BaseModel):
+    name: str = ""
 
 
 def _usage_limits(settings: Settings) -> UsageLimits:
@@ -345,6 +353,100 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=404, detail="source not found")
         return {"deleted": source_id}
 
+    @app.post("/sources/{source_id}/resync")
+    async def resync_source(source_id: int, user: AuthenticatedUser = Depends(require_admin)):
+        match = next((s for s in store.list_sources(role="admin") if s[0] == source_id), None)
+        if match is None:
+            raise HTTPException(status_code=404, detail="source not found")
+        location = match[2]  # (id, kind, location, access)
+        # Guard a vanished/unmounted path: sync_folder treats an empty folder as
+        # "everything was deleted" and would wipe this source's documents.
+        if not Path(location).is_dir():
+            raise HTTPException(status_code=400,
+                detail=f"source path is not currently a directory: {location}")
+        report = await run_in_threadpool(
+            sync_folder, Path(location), store, max_chars=settings.chunk_max_chars,
+            overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+            max_doc_chars=settings.max_doc_chars,
+        )
+        return {"report": {"added": report.added, "updated": report.updated,
+                           "skipped": report.skipped, "removed": report.removed,
+                           "failed": report.failed}}
+
+    @app.get("/users")
+    async def list_users(user: AuthenticatedUser = Depends(require_admin)):
+        # Show the EFFECTIVE role: HIPPO_ADMIN_EMAILS always resolve to admin at
+        # request time (resolve_role), so reflect that here rather than the (possibly
+        # stale "developer") stored value — otherwise the list misrepresents power.
+        admins = settings.admin_email_list
+        return [{"email": e, "role": "admin" if e in admins else r}
+                for e, r in store.list_users()]
+
+    @app.put("/users/{email}/role")
+    async def set_user_role(email: str, body: RoleIn,
+                            user: AuthenticatedUser = Depends(require_admin)):
+        target = email.strip().lower()
+        valid_roles = {"developer", "manager", "admin"}
+        if body.role not in valid_roles:
+            raise HTTPException(status_code=400,
+                detail=f"invalid role {body.role!r}; expected one of {sorted(valid_roles)}")
+        if target == user.email and body.role != "admin":
+            raise HTTPException(status_code=400,
+                detail="you can't remove your own admin role")
+        # A HIPPO_ADMIN_EMAILS user is force-promoted by resolve_role every request,
+        # so demoting them here is a no-op that would make /users lie. Refuse it.
+        if target in settings.admin_email_list and body.role != "admin":
+            raise HTTPException(status_code=400,
+                detail="this user is a bootstrap admin (HIPPO_ADMIN_EMAILS); "
+                       "remove them from that env var to change their role")
+        store.set_role(target, body.role)
+        return {"email": target, "role": body.role}
+
+    @app.get("/tokens")
+    async def list_tokens_route(all_users: bool = Query(False, alias="all"),
+                                user: AuthenticatedUser = Depends(verify_request)):
+        if all_users:
+            if user.role != "admin":
+                raise HTTPException(status_code=403, detail="admin only")
+            return [{"id": i, "email": e, "name": n, "created_at": c, "last_used_at": lu}
+                    for i, e, n, c, lu in store.list_all_tokens()]
+        return [{"id": i, "name": n, "created_at": c, "last_used_at": lu}
+                for i, n, c, lu in store.list_tokens(user.email)]
+
+    @app.post("/tokens")
+    async def create_token_route(body: TokenIn, user: AuthenticatedUser = Depends(verify_request)):
+        # Atomic id from the insert (not a follow-up query) — tied to the caller,
+        # so the minted token carries the caller's role; no privilege escalation.
+        token_id, secret = store.create_token_returning_id(user.email, body.name)
+        return {"id": token_id, "token": secret}
+
+    @app.delete("/tokens/{token_id}")
+    async def delete_token(token_id: int, user: AuthenticatedUser = Depends(verify_request)):
+        ok = (store.revoke_token_any(token_id) if user.role == "admin"
+              else store.revoke_token(token_id, user.email))
+        if not ok:
+            raise HTTPException(status_code=404, detail="token not found")
+        return {"revoked": token_id}
+
+    @app.get("/settings/status")
+    async def settings_status(user: AuthenticatedUser = Depends(require_admin)):
+        return {
+            "auth_mode": settings.auth_mode,
+            "chat_model": settings.chat_model,
+            "embedding_model": settings.embedding_model,
+            "repos": {
+                "team": bool(settings.github_token and settings.github_docs_repo),
+                "managers": bool(settings.github_token and settings.github_managers_repo),
+            },
+            "mcp_enabled": settings.mcp_enabled,
+            "slack_enabled": settings.slack_enabled,
+            "counts": {
+                "documents": len(store.list_documents(role="admin")),
+                "sources": len(store.list_sources(role="admin")),
+                "users": len(store.list_users()),
+            },
+        }
+
     if mcp_server_obj is not None:
         app.mount("/mcp", _McpBearerAuth(mcp_server_obj.streamable_http_app(), store, _email_to_role))
 
@@ -360,6 +462,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             index = dist / "index.html"
 
             RESERVED = ("auth", "chat", "ingest", "documents", "sources", "me",
+                        "users", "tokens", "settings",
                         "health", "openapi.json", "docs", "redoc", "assets", "mcp")
 
             @app.get("/{full_path:path}")
