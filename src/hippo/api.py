@@ -132,6 +132,21 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     con = connect(settings.db_path, embedding_dim=settings.embedding_dim)
     embedder = build_embedder(settings)
     store = Storage(con, embedder)
+
+    # Operational config: a DB override (config table) wins over the env Settings
+    # default, but ONLY for DB_OVERRIDABLE keys (secrets/env-only keys never come
+    # from the DB). With an empty config table every cfg.get(...) returns the env
+    # value, so these locals are identical to settings.X — no behavior change.
+    # Resolved-at-construction (changes take effect on next restart): auth_mode and
+    # the oidc/iap/domain wiring. chat_model is read LIVE per /chat request below.
+    from .config import Config
+    cfg = Config(settings, store)
+    auth_mode = cfg.get("auth_mode")
+    allowed_domain = cfg.get("allowed_domain")
+    oidc_client_id = cfg.get("oidc_client_id")
+    public_url = cfg.get("public_url")
+    iap_audience = cfg.get("iap_audience")
+
     enricher = Enricher(settings.enrich_model) if settings.enrich_enabled else None
     ingestor = Ingestor(
         store, max_chars=settings.chunk_max_chars,
@@ -139,7 +154,15 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         max_doc_chars=settings.max_doc_chars,
         max_decompressed_bytes=settings.max_decompressed_bytes,
     )
-    agent = build_agent(model_override or settings.chat_model)
+    # chat_model is live (spec §3): rebuild the agent when the DB overlay changes it.
+    default_model = model_override or cfg.get("chat_model")
+    agent_cache = {"model": default_model, "agent": build_agent(default_model)}
+
+    def _live_agent():
+        m = model_override or cfg.get("chat_model")
+        if m != agent_cache["model"]:
+            agent_cache.update(model=m, agent=build_agent(m))
+        return agent_cache["agent"]
 
     github_factory = github_factory or (
         lambda repo: GitHubContentsClient(repo, settings.github_token, settings.github_branch))
@@ -161,9 +184,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     # enforces auth in iap/oidc modes — the browser's same-origin policy is an
     # independent defence layer worth keeping.
 
-    if settings.auth_mode == "iap" and iap_verifier is None and not settings.iap_audience:
+    if auth_mode == "iap" and iap_verifier is None and not iap_audience:
         raise ValueError("HIPPO_IAP_AUDIENCE is required when HIPPO_AUTH_MODE=iap")
-    iap = iap_verifier or (IapVerifier(settings.iap_audience) if settings.auth_mode == "iap" else None)
+    iap = iap_verifier or (IapVerifier(iap_audience) if auth_mode == "iap" else None)
 
     def _email_to_role(email: str) -> str:
         """Canonical domain-check + role resolution. Raises AuthError on domain failure.
@@ -188,9 +211,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 log.warning("auth denied: invalid bearer token")
                 raise HTTPException(status_code=401, detail="invalid token")
             return _user_for(email)
-        if settings.auth_mode == "none":
+        if auth_mode == "none":
             return AuthenticatedUser(email="local", role="owner")
-        if settings.auth_mode == "iap":
+        if auth_mode == "iap":
             assertion = request.headers.get("x-goog-iap-jwt-assertion", "")
             if not assertion:
                 log.warning("auth denied: missing IAP assertion")
@@ -200,7 +223,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             except AuthError as e:
                 log.warning("auth denied (iap): %s", e)
                 raise HTTPException(status_code=401, detail=str(e))
-        if settings.auth_mode == "password":
+        if auth_mode == "password":
             uid = request.session.get("user_id")
             if not uid:
                 raise HTTPException(status_code=401, detail="not signed in")
@@ -237,11 +260,11 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=403,
                 detail="cannot manage a folder above your tier")
 
-    if settings.auth_mode == "oidc":
+    if auth_mode == "oidc":
         if not settings.secret_key:
             raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=oidc")
         app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
-                           https_only=settings.public_url.startswith("https"),
+                           https_only=public_url.startswith("https"),
                            same_site="lax")
         exchange = code_exchanger or _exchange_code_with_google
 
@@ -250,12 +273,12 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             state = secrets.token_urlsafe(16)
             request.session["oauth_state"] = state
             params = {
-                "client_id": settings.oidc_client_id,
-                "redirect_uri": f"{settings.public_url}/auth/callback",
+                "client_id": oidc_client_id,
+                "redirect_uri": f"{public_url}/auth/callback",
                 "response_type": "code", "scope": "openid email", "state": state,
             }
-            if settings.allowed_domain:
-                params["hd"] = settings.allowed_domain  # UX hint; check_domain enforces
+            if allowed_domain:
+                params["hd"] = allowed_domain  # UX hint; check_domain enforces
             return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
 
         @app.get("/auth/callback")
@@ -265,10 +288,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             tokens = await run_in_threadpool(exchange, code, settings)
             try:
                 email = validate_google_id_token(
-                    tokens.get("id_token", ""), settings.oidc_client_id,
+                    tokens.get("id_token", ""), oidc_client_id,
                     key_fetcher=google_key_fetcher,
                 )
-                check_domain(email, settings.allowed_domain)
+                check_domain(email, allowed_domain)
             except AuthError as e:
                 raise HTTPException(status_code=403, detail=str(e))
             store.ensure_user(email)
@@ -280,11 +303,11 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             request.session.clear()
             return RedirectResponse("/")
 
-    if settings.auth_mode == "password":
+    if auth_mode == "password":
         if not settings.secret_key:
             raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=password")
         app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
-                           https_only=settings.public_url.startswith("https"),
+                           https_only=public_url.startswith("https"),
                            same_site="lax")
 
         @app.post("/auth/login")
@@ -316,7 +339,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.get("/auth/config")
     async def auth_config():
-        return {"auth_mode": settings.auth_mode}
+        return {"auth_mode": auth_mode}
 
     @app.get("/health")
     async def health(_=Depends(verify_request)):
@@ -324,13 +347,13 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.get("/me")
     async def me(user: AuthenticatedUser = Depends(verify_request)):
-        return {"email": user.email, "role": user.role, "auth_mode": settings.auth_mode}
+        return {"email": user.email, "role": user.role, "auth_mode": auth_mode}
 
     @app.post("/chat")
     async def chat(request: Request, user: AuthenticatedUser = Depends(verify_request)):
         deps = HubDeps(store=store, role=user.role)
         return await VercelAIAdapter.dispatch_request(
-            request, agent=agent, deps=deps, usage_limits=_usage_limits(settings)
+            request, agent=_live_agent(), deps=deps, usage_limits=_usage_limits(settings)
         )
 
     @app.post("/ingest")
@@ -410,7 +433,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 if body.origin == "folder":
                     folder = Path(body.location).resolve()
                     roots = settings.source_root_list
-                    if settings.auth_mode != "none" and not roots:
+                    if auth_mode != "none" and not roots:
                         raise HTTPException(status_code=403,
                             detail="folder mounts disabled: no HIPPO_SOURCE_ROOTS configured")
                     if roots and not any(folder == r or r in folder.parents for r in roots):
@@ -582,7 +605,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     @app.get("/settings/status")
     async def settings_status(user: AuthenticatedUser = Depends(require_admin)):
         return {
-            "auth_mode": settings.auth_mode,
+            "auth_mode": auth_mode,
             "chat_model": settings.chat_model,
             "embedding_model": settings.embedding_model,
             "repos": {
