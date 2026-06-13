@@ -105,3 +105,9 @@ def test_legacy_schema_with_source_id_present_still_rejected(tmp_path):
     con.close()
     with pytest.raises(RuntimeError, match="recreate the database"):
         connect(p, embedding_dim=32)
+
+
+def test_config_table_exists(tmp_path):
+    con = connect(tmp_path / "t.db", embedding_dim=32)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(config)")}
+    assert {"key", "value"} <= cols

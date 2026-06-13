@@ -77,3 +77,31 @@ def test_slack_settings_from_env(monkeypatch):
     assert s.slack_enabled is True
     assert s.slack_bot_token == "xoxb-abc"
     assert s.slack_app_token == "xapp-xyz"
+
+
+def test_config_overlay_db_overrides_env_for_operational_keys(tmp_path):
+    from hippo.config import Config, Settings, DB_OVERRIDABLE
+    from hippo.db import connect
+    from hippo.embeddings import FakeEmbedder
+    from hippo.storage import Storage
+
+    s = Settings(_env_file=None, chat_model="env-model", github_token="SECRET")
+    store = Storage(connect(tmp_path / "t.db", embedding_dim=32), FakeEmbedder(dim=32))
+    cfg = Config(s, store)
+    assert cfg.get("chat_model") == "env-model"          # env default
+    store.set_config("chat_model", "db-model")
+    assert cfg.get("chat_model") == "db-model"           # DB overrides
+    assert "chat_model" in DB_OVERRIDABLE
+    # a secret/env-only key is NEVER sourced from the DB
+    store.set_config("github_token", "DB-LEAK")
+    assert cfg.get("github_token") == "SECRET"           # still env
+    # embedding_dim is coerced to int
+    store.set_config("embedding_dim", "768")
+    assert cfg.get("embedding_dim") == 768
+
+
+def test_setup_token_is_an_env_only_setting(tmp_path):
+    from hippo.config import Settings, DB_OVERRIDABLE
+    s = Settings(_env_file=None, setup_token="abc")
+    assert s.setup_token == "abc"
+    assert "setup_token" not in DB_OVERRIDABLE
