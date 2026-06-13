@@ -178,6 +178,21 @@ def test_google_id_token_rejects_unknown_kid_after_refetch():
     assert len(calls) == 2  # refetched once on unknown kid (rotation), then failed
 
 
+def test_hash_and_verify_password_roundtrip():
+    from hippo.auth import hash_password, verify_password
+
+    h = hash_password("correct horse battery staple")
+    assert h != "correct horse battery staple"   # never plaintext
+    assert h.startswith("$argon2")               # argon2id encoded hash
+    assert verify_password(h, "correct horse battery staple") is True
+    assert verify_password(h, "wrong password") is False
+
+
+def test_verify_password_handles_garbage_hash():
+    from hippo.auth import verify_password
+    assert verify_password("not-a-real-hash", "whatever") is False
+
+
 def test_google_id_token_rejects_none_algorithm():
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "kid": "g1"}).encode()).rstrip(b"=")
     payload = base64.urlsafe_b64encode(json.dumps(_claims()).encode()).rstrip(b"=")

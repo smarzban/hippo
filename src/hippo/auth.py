@@ -141,3 +141,32 @@ def validate_google_id_token(id_token: str, client_id: str, *, key_fetcher=None)
         raise AuthError("ID token has no verified email")
 
     return email
+
+
+# --- password hashing (SP2) ---
+# argon2id (argon2-cffi default type). One module-level hasher; tests swap it for
+# a reduced-cost profile via set_password_hasher. Never log or return a hash.
+from argon2 import PasswordHasher as _PasswordHasher
+from argon2.exceptions import Argon2Error, InvalidHashError as _InvalidHashError
+
+_HASHER = _PasswordHasher()
+
+
+def set_password_hasher(hasher) -> None:
+    """Swap the argon2 hasher (tests use a reduced-cost profile)."""
+    global _HASHER
+    _HASHER = hasher
+
+
+def hash_password(password: str) -> str:
+    """Return an argon2id encoded hash (includes the per-hash salt + params)."""
+    return _HASHER.hash(password)
+
+
+def verify_password(hashed: str, password: str) -> bool:
+    """Constant-time verify. False on mismatch OR a malformed/foreign hash —
+    never raises, so callers get a clean boolean and no enumeration signal."""
+    try:
+        return _HASHER.verify(hashed, password)
+    except (Argon2Error, _InvalidHashError):
+        return False

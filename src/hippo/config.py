@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     search_top_k: int = 8
 
     # --- auth (spec §1) ---
-    auth_mode: Literal["none", "oidc", "iap"] = "none"
+    auth_mode: Literal["none", "oidc", "iap", "password"] = "none"
     allowed_domain: str = ""  # e.g. example.com; empty = any domain
     admin_emails: str = ""  # comma-separated bootstrap admins (always admin)
     secret_key: str = ""  # session-cookie signing; required in oidc mode
