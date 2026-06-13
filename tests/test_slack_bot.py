@@ -216,3 +216,18 @@ async def test_manager_dm_sees_manager_doc_channel_does_not(tmp_path):
     # surface_role is what handle_event passes to the agent:
     assert surface_role("manager", is_dm=True) == "manager"      # DM: sees Salaries
     assert surface_role("manager", is_dm=False) == "developer"   # channel: does not
+
+
+# ---------------------------------------------------------------------------
+# build_slack_app construction smoke (offline) — guards against a bad Bolt
+# kwarg / API drift that handle_event tests (fake client) never exercise.
+# ---------------------------------------------------------------------------
+from hippo.slack_bot import build_slack_app
+
+
+def test_build_slack_app_constructs_offline_with_two_handlers(tmp_path):
+    store = _store(tmp_path)
+    settings = Settings(_env_file=None, slack_bot_token="xoxb-fake", slack_app_token="xapp-fake")
+    app = build_slack_app(store, _fixed_agent(), settings)
+    # Constructed without network or signing secret, with both event handlers wired.
+    assert len(app._async_listeners) == 2

@@ -181,9 +181,15 @@ def slack():
     store = Storage(con, build_embedder(settings))
     agent = build_agent(settings.chat_model)
     slack_app = build_slack_app(store, agent, settings)
-    handler = AsyncSocketModeHandler(slack_app, settings.slack_app_token)
-    typer.echo("Hippo Slack bot connecting over Socket Mode…")
-    asyncio.run(handler.start_async())
+
+    async def _run():
+        # AsyncSocketModeHandler opens an aiohttp session in its constructor, which
+        # requires a running event loop — so build it inside asyncio.run, not before.
+        handler = AsyncSocketModeHandler(slack_app, settings.slack_app_token)
+        typer.echo("Hippo Slack bot connecting over Socket Mode…")
+        await handler.start_async()
+
+    asyncio.run(_run())
 
 
 @app.command()

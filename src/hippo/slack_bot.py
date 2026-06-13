@@ -162,7 +162,9 @@ def build_slack_app(store: Storage, agent, settings: Settings):
     handle_event. Thin glue — not unit-tested (the runner is in cli.py)."""
     from slack_bolt.async_app import AsyncApp
 
-    app = AsyncApp(token=settings.slack_bot_token, token_verification_enabled=False)
+    # AsyncApp defers token verification to runtime (no auth.test at construction),
+    # so no signing secret or verification flag is needed for Socket Mode.
+    app = AsyncApp(token=settings.slack_bot_token)
 
     @app.event("app_mention")
     async def _on_mention(event, client, context):
