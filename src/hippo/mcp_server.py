@@ -1,12 +1,17 @@
 """Expose Hippo's retrieval tools over MCP (Model Context Protocol) so external
 agents (Claude Code etc.) can query the knowledge base. The four tools mirror the
-in-app agent's tools but call Storage directly — no LLM — so they stay role-filtered
-and zero-network. The caller's role comes from their bearer token (set per request
-by the HTTP mount's auth middleware in api.py) via the _mcp_role contextvar."""
+in-app agent's tools but call Storage directly — no LLM — so they stay role-filtered.
+Returned document text is framed as ⟦untrusted document data⟧…⟦end⟧ (the same
+prompt-injection boundary the in-app agent applies, via tool_io.as_untrusted_data)
+so a well-behaved external client treats it as evidence, not instructions. (Note:
+`search` does embed the query, so this surface is not literally zero-network.) The
+caller's role comes from their bearer token (set per request by the HTTP mount's
+auth middleware in api.py) via the _mcp_role contextvar."""
 
 from contextvars import ContextVar
 
 from .storage import Storage
+from .tool_io import as_untrusted_data, clamp_top_k
 
 # Per-request role, set by the /mcp bearer-auth middleware (api.py) or the stdio
 # entrypoint (cli.py). None until set.
@@ -14,14 +19,14 @@ _mcp_role: ContextVar[str | None] = ContextVar("hippo_mcp_role", default=None)
 
 
 def mcp_search(store: Storage, role: str, query: str, top_k: int = 8) -> list[dict]:
-    hits = store.search_hybrid(query, top_k=max(1, top_k), role=role)
+    hits = store.search_hybrid(query, top_k=clamp_top_k(top_k), role=role)
     return [
         {
             "doc_id": h.document_id,
             "path": h.path,
             "title": h.title,
             "section": h.heading_path,
-            "text": h.text,
+            "text": as_untrusted_data(h.text),
         }
         for h in hits
     ]
@@ -31,7 +36,8 @@ def mcp_read_document(store: Storage, role: str, doc_id: int) -> dict:
     doc = store.get_document(doc_id, role=role)
     if doc is None:
         return {"error": f"no document with id {doc_id}"}
-    return {"doc_id": doc.id, "path": doc.path, "title": doc.title, "content": doc.content}
+    return {"doc_id": doc.id, "path": doc.path, "title": doc.title,
+            "content": as_untrusted_data(doc.content)}
 
 
 def mcp_list_documents(store: Storage, role: str, query: str | None = None) -> list[dict]:
@@ -47,7 +53,8 @@ def mcp_grep(store: Storage, role: str, pattern: str) -> list[dict]:
     except ValueError as e:
         return [{"error": str(e)}]
     return [
-        {"doc_id": h.document_id, "path": h.path, "section": h.heading_path, "text": h.text}
+        {"doc_id": h.document_id, "path": h.path, "section": h.heading_path,
+         "text": as_untrusted_data(h.text)}
         for h in hits
     ]
 
