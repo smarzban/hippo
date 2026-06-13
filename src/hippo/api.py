@@ -736,9 +736,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     @app.get("/settings/status")
     async def settings_status(user: AuthenticatedUser = Depends(require_admin)):
         return {
-            "auth_mode": auth_mode,
-            "chat_model": settings.chat_model,
-            "embedding_model": settings.embedding_model,
+            "auth_mode": cfg.get("auth_mode"),
+            "chat_model": cfg.get("chat_model"),
+            "embedding_model": cfg.get("embedding_model"),
+            "setup_complete": store.is_setup_complete(),
             "repos": {
                 "team": bool(settings.github_token and settings.github_docs_repo),
                 "managers": bool(settings.github_token and settings.github_managers_repo),

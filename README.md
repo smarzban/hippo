@@ -72,11 +72,11 @@ Hippo supports four auth modes, set via `HIPPO_AUTH_MODE`:
 - **`none`** (default) — no authentication; every request is treated as a local admin. Suitable for personal use or private networks.
 - **`oidc`** — in-app Google sign-in. Users are redirected to `/auth/login`, authenticate with Google, and receive a session cookie. Requires `HIPPO_OIDC_CLIENT_ID`, `HIPPO_OIDC_CLIENT_SECRET`, `HIPPO_SECRET_KEY`, and `HIPPO_PUBLIC_URL`. Optionally restrict to a single Google Workspace domain with `HIPPO_ALLOWED_DOMAIN`.
 - **`iap`** — deployed behind [GCP Identity-Aware Proxy](https://cloud.google.com/iap). Hippo verifies the `x-goog-iap-jwt-assertion` header on every request. Requires `HIPPO_IAP_AUDIENCE`.
-- **`password`** — built-in email + password login. Users sign in with their email and a password that is argon2id-hashed in the database. Accounts are locked for 15 minutes after 5 consecutive failures. Sessions are 7-day signed cookies. Requires `HIPPO_SECRET_KEY`; no `HIPPO_OIDC_*` settings are needed. **There are no default credentials** — the first owner must be bootstrapped via the CLI (see below) or the SP3 setup wizard (not yet built).
+- **`password`** — built-in email + password login. Users sign in with their email and a password that is argon2id-hashed in the database. Accounts are locked for 15 minutes after 5 consecutive failures. Sessions are 7-day signed cookies. Requires `HIPPO_SECRET_KEY`; no `HIPPO_OIDC_*` settings are needed. **There are no default credentials** — the first owner is created via the first-run wizard (see below) or the break-glass CLI.
 
 **Bearer tokens** are accepted in every mode for headless clients (Slack bot, MCP server, CI scripts). Create a token with `hippo token create <email>`.
 
-**Password mode bootstrap.** The SP3 setup wizard (not yet built) will be the normal first-run flow. Until then, create the first owner with the break-glass CLI:
+**Password mode bootstrap (break-glass).** The normal first-run flow is the browser wizard (see below). If you need to create or reset credentials from the CLI:
 
     hippo user set-password owner@example.com --role owner
 
@@ -86,6 +86,34 @@ The command prompts for the password twice (no echo). Re-run it at any time to r
 
 **Roles:** users have one of three roles — `user` (default), `admin`, or `owner`. Set roles with `hippo role set <email> <role>`. Content is tiered by the folder it lives in — a `user`-tier folder is visible to everyone; an `admin`-tier folder is visible to `admin` and `owner`; an `owner`-tier folder is visible only to `owner`. Admins can manage folders and tokens via the API or the Settings UI. Emails listed in `HIPPO_ADMIN_EMAILS` are always promoted to `owner` on sign-in.
 
+## First-run wizard
+
+When Hippo starts with an empty database it enters **setup mode**. Open the browser — you'll see a step-by-step wizard instead of the chat UI:
+
+1. **Token** — enter the setup token. Set `HIPPO_SETUP_TOKEN` in the environment before starting; if unset, a one-time random token is printed to the startup logs (grep for `first-run setup token is:`).
+2. **Auth mode** — choose `password`, `oidc`, or `iap` (`none` stays a dev-only env setting).
+3. **Owner account** — enter the owner email. For `password` mode, also set the initial password (8 characters minimum). For `oidc`/`iap`, provide the email that will be the owner on first sign-in.
+4. **Folder names** — rename the three default root folders (`Default`/`Private`/`Owner`) to names that suit your team (e.g. `Team`, `Managers`, `Execs`).
+5. **Models** — optionally override `chat_model`, `embedding_model`, and `embedding_dim` from the wizard. Leave blank to use the env/`.env` defaults.
+6. **Finish** — the wizard posts to `POST /setup`, marks setup complete, and reloads the app into the normal chat view.
+
+The setup endpoint is gated by the token and refuses to run again once setup is complete (409). The wizard is the recommended path for team deployments.
+
+## Config store
+
+Hippo keeps a `config` table in the database for operational, **non-secret** settings. Owners can change these live via the browser (Instance Settings tab) or `PUT /config`. The DB value wins over the env default for these keys:
+
+| Key | Notes |
+|---|---|
+| `auth_mode` | takes effect on next `hippo serve` restart |
+| `chat_model` | live per-request — no restart needed |
+| `enrich_model` | takes effect on next restart |
+| `embedding_model` / `embedding_dim` | takes effect on next restart; **locked once documents exist** (run `hippo reindex` first) |
+| `allowed_domain` | takes effect on next restart |
+| `oidc_client_id` / `public_url` / `iap_audience` | takes effect on next restart |
+
+**Secrets are always env-only.** `OPENAI_API_KEY`, `HIPPO_OIDC_CLIENT_SECRET`, `HIPPO_SECRET_KEY`, `HIPPO_SETUP_TOKEN`, GitHub tokens, and all other credentials are never stored in the database and never returned by any API endpoint.
+
 ## Settings UI
 
 Every signed-in user can access the Settings view via the gear (⚙) button in the header. From there:
@@ -93,11 +121,12 @@ Every signed-in user can access the Settings view via the gear (⚙) button in t
 - **Tokens** (everyone) — create, list, and revoke your own personal access tokens (`hk_…`). The plaintext secret is shown exactly once after creation. Use these tokens for MCP clients, the Slack bot, and CI scripts. Each token carries your own role (no escalation).
 - **Folders** (admin only) — browse the folder tree, create child folders, rename/delete folders, or trigger a re-sync on filesystem-synced folders. Each folder has a tier (`user`, `admin`, or `owner`) inherited from its parent. Documents live in exactly one folder; upload access is gated by the folder's tier.
 - **Users & Roles** (admin only) — list all users and change their role. An admin cannot demote their own account (anti-lockout guard).
-- **Status** (admin only) — read-only view of the instance configuration: auth mode, models, repo wiring, MCP/Slack status, and doc/folder/user counts. No secrets are exposed.
+- **Status** (admin only) — read-only view of the instance configuration: effective auth mode and models (from the DB overlay if set), setup status, repo wiring, MCP/Slack status, and doc/folder/user counts. No secrets are exposed.
+- **Instance** (owner only) — live-edit operational settings stored in the config table. `chat_model` and `enrich_model` can be changed any time; `embedding_model`/`embedding_dim` are read-only once documents exist (change them via `hippo reindex`); `auth_mode` has an anti-lockout guard (you must hold a valid credential in the target mode before switching).
 
 **Uploading documents:** click "Add doc" in the header, pick a file, and select one or more destination folders from the modal. Only folders writable by your role are shown (manual folders at or below your tier). The same file can be ingested into multiple folders.
 
-New API endpoints backing the Settings UI: `GET /users`, `PUT /users/{email}/role`, `GET /tokens`, `POST /tokens`, `DELETE /tokens/{id}`, `GET /folders`, `POST /folders`, `PATCH /folders/{id}`, `DELETE /folders/{id}`, `POST /folders/{id}/resync`, `GET /settings/status`.
+New API endpoints backing the Settings UI: `GET /users`, `PUT /users/{email}/role`, `GET /tokens`, `POST /tokens`, `DELETE /tokens/{id}`, `GET /folders`, `POST /folders`, `PATCH /folders/{id}`, `DELETE /folders/{id}`, `POST /folders/{id}/resync`, `GET /settings/status`, `GET /setup/status`, `POST /setup`, `GET /config`, `PUT /config`.
 
 **Upload to repo:** when `HIPPO_GITHUB_TOKEN` and a repo are configured, files uploaded via `/ingest` are committed to the configured GitHub repo via the Contents API. Without GitHub config, files are ingested directly (unversioned).
 

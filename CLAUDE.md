@@ -33,9 +33,13 @@ api.py         build_app(settings, model_override=None): /chat streams Vercel AI
                /folders: GET (role-filtered list with writable flag), POST (admin+), PATCH (rename/move, admin+), DELETE (admin+), POST /{id}/resync (admin+, folder-origin only). Allowlist via HIPPO_SOURCE_ROOTS.
                /users (admin): GET list, PUT /{email}/role with anti-lockout guard.
                /tokens: GET/POST (self-service, secret returned once), DELETE /{id} (self or admin); GET ?all=true (admin).
-               /settings/status (admin): auth mode, models, repo bools, counts — no secrets.
+               /settings/status (admin): effective auth_mode/chat_model/embedding_model (cfg.get — DB overlay wins), setup_complete flag, repo bools, counts — no secrets.
+               GET /setup/status (public): {setup_complete, auth_modes_available}. POST /setup (token-gated, once): wizard endpoint — sets owner, renames roots, persists operational config, marks setup complete; 409 if already complete; 403 on wrong token; validates secret env vars are present for the chosen mode.
+               GET /config (owner): effective operational config for all DB_OVERRIDABLE keys (DB value else env default); never returns a secret. PUT /config (owner): upsert DB_OVERRIDABLE keys; rejects unknown/secret keys (400); embedding_model/dim locked once documents exist (409); auth_mode switch anti-lockout guard (_validate_auth_switch).
                Serves ui/dist as static files when HIPPO_UI_DIST is set (single origin, :8000).
                Mounts FastMCP server at /mcp (HIPPO_MCP_ENABLED, default true) with _McpBearerAuth middleware (bearer token → role via _mcp_role contextvar).
+               cfg = Config(settings, store) built in build_app; operational keys resolved at construction (auth_mode, oidc/iap/domain wiring); chat_model read LIVE per /chat via _live_agent().
+               SessionMiddleware mounted once if settings.secret_key (covers password + oidc + wizard auto-login).
 mcp_server.py  FastMCP server exposing search/read_document/list_documents/grep; mounted at /mcp in api.py with bearer-token auth + role filtering via the _mcp_role contextvar; `hippo mcp` runs it over stdio (as owner, no token).
 auth.py        AuthenticatedUser(email, role), AuthError, check_domain, resolve_role (shared identity→role: normalize+domain-gate+ensure_user+owner-bootstrap for HIPPO_ADMIN_EMAILS, used by api.py and slack_bot.py),
                IapVerifier (ES256 IAP assertions, injectable key_fetcher),
@@ -49,8 +53,13 @@ slack_bot.py   Slack Q&A bot: Socket Mode via slack-bolt. Pure helpers
                (surface_role/build_history/format_answer/answer_question) + handle_event
                adapter (tested with a fake client) + build_slack_app wiring. Split-by-surface
                access: DM=asker's role, channel @mention=user-tier only. `hippo slack` runs it.
-config.py      Settings, env prefix HIPPO_ (pydantic-settings). auth_mode: Literal["none","oidc","iap","password"]
-db.py          connect() -> sqlite3: folder-tree schema (folders adjacency table, documents.folder_id, surrogate users(id PK) + tokens(user_id FK)), WAL, sqlite-vec, FTS5 + sync triggers.
+config.py      Settings, env prefix HIPPO_ (pydantic-settings). auth_mode: Literal["none","oidc","iap","password"].
+               setup_token: str (env-only, never stored in DB; if empty a random token is logged at startup).
+               DB_OVERRIDABLE: frozenset of operational keys the config table may override (auth_mode, chat_model,
+               enrich_model, embedding_model, embedding_dim, allowed_domain, oidc_client_id, public_url, iap_audience).
+               Config(settings, store).get(key) → DB value if key in DB_OVERRIDABLE and set, else settings.key; secrets
+               never read from DB. _coerce() converts embedding_dim to int.
+db.py          connect() -> sqlite3: folder-tree schema (folders adjacency table, documents.folder_id, surrogate users(id PK) + tokens(user_id FK), config(key,value)), WAL, sqlite-vec, FTS5 + sync triggers.
                Seeds three root folders on first open (Default/user, Private/admin, Owner/owner). Legacy-DB guard: raises RuntimeError("recreate the database") if documents.source_id found.
 embeddings.py  Embedder protocol; OpenAIEmbedder (default text-embedding-3-small); FakeEmbedder (deterministic, tests/offline)
 enrich.py      Enricher: doc summary + contextual line per chunk (cheap model; embedding input = context+"\n"+chunk; stored chunk text stays raw)
@@ -70,6 +79,8 @@ storage.py     Storage(con, embedder): ALL SQL lives here. upsert/delete/get/lis
                get_user_by_id(id)->(email,role)|None, record_failed_login(email) (increments counter; sets locked_until after LOCKOUT_MAX_FAILURES=5),
                reset_login_state(email) (clears on successful login), is_locked(email)->bool (DB-clock comparison).
                LOCKOUT_MAX_FAILURES=5, LOCKOUT_MINUTES=15 (class constants; hardcoded defaults). password_hash is never returned by any API endpoint.
+               Config store (SP3): get_config(key)->str|None, set_config(key, value) (upsert), all_config()->dict,
+               is_setup_complete()->bool (setup_complete key == "1"), mark_setup_complete(), document_count()->int.
                Role-filtered retrieval: search_hybrid/grep/list_documents/get_document take keyword-only `role` with NO default.
                _role_filter(role) -> SQL fragment + params using readable_min_roles() from roles.py (the single definition of rank logic).
 ```
@@ -84,7 +95,7 @@ Token secret shown once after POST; list views show metadata only.
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (259 tests, <6s, ZERO network — must stay that way)
+uv run pytest                      # full suite (275 tests, <7s, ZERO network — must stay that way)
 cd ui && npm test                  # 19 vitest (folders + citations + auth suites)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all synced folders
 uv run hippo serve                 # API :8000
@@ -144,9 +155,18 @@ tab + role-scoped upload modal; pure roles.py module; legacy-DB guard. Implement
 `password` (email+password, argon2id, lockout 5 fails/15 min, 7-day session), POST /auth/login +
 /auth/logout + GET /auth/config, self-service POST /me/password, admin reset POST /users/{email}/password,
 break-glass `hippo user set-password` CLI, React login screen + password-change + admin-reset UI.
-Implemented on branch `build/sp2-password-auth` (PR pending). 259 pytest + 19 vitest, eval 4/4 on seed fixtures, UI builds clean.
+Implemented on branch `build/sp2-password-auth` (PR pending). **SP3 (first-run setup wizard &
+config store):** DB `config` table; `Config` overlay resolver (DB wins for DB_OVERRIDABLE keys;
+secrets env-only); `setup_token` field; `GET /setup/status` + `POST /setup` (token-gated, once;
+wizard flow: auth mode → owner → folder names → models); `GET /config` + `PUT /config` (owner-only;
+secrets blocked; embedding reindex guard; auth-mode anti-lockout `_validate_auth_switch`); live
+`chat_model` per `/chat` via `_live_agent()`; operational config resolved at construction from DB
+overlay; SessionMiddleware once if `secret_key`; `/settings/status` reports effective overlay values
++ `setup_complete`; React first-run wizard (6 steps, setup.ts pure logic, Vitest-covered); owner-only
+Instance Settings tab. Implemented on branch `build/sp3-setup-wizard`. **PRODUCTIZATION EPIC
+(SP1+SP2+SP3) COMPLETE.** 275 pytest + 19 vitest, eval 4/4 on seed fixtures, UI builds clean.
 
-**Active plan:** see `docs/superpowers/plans/2026-06-13-sp2-password-auth.md`. Next: scale (Postgres+pgvector), SP3 setup wizard, MCP client/connectors.
+**Active plan:** `docs/superpowers/plans/2026-06-13-sp3-setup-wizard.md` — SP3 complete. Next: scale (Postgres+pgvector), MCP client/connectors, deploy.
 
 **Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown),
 PDF parsing (planned), Postgres+pgvector migration (reimplement Storage), hierarchical summaries, GraphRAG.
