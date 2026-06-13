@@ -45,10 +45,10 @@ Then — `OPENAI_*` vars must be in the process environment, so load `.env` befo
 | `HIPPO_EMBEDDING_DIM` | `1536` | must match the model; run `hippo reindex` after changing |
 | `HIPPO_ENRICH_ENABLED` | `true` | contextual lines + summaries at ingestion (cheap model) |
 | `HIPPO_ENRICH_MODEL` | `openai:gpt-5-mini` | |
-| `HIPPO_AUTH_MODE` | `none` | `none` \| `oidc` \| `iap` — see Authentication below |
+| `HIPPO_AUTH_MODE` | `none` | `none` \| `oidc` \| `iap` \| `password` — see Authentication below |
 | `HIPPO_ALLOWED_DOMAIN` | _(unset)_ | restrict sign-in to this Google Workspace domain (e.g. `example.com`) |
 | `HIPPO_ADMIN_EMAILS` | _(unset)_ | comma-separated emails that get admin role on first sign-in |
-| `HIPPO_SECRET_KEY` | _(required for oidc)_ | random secret for session cookie signing |
+| `HIPPO_SECRET_KEY` | _(required for oidc/password)_ | random secret for session cookie signing |
 | `HIPPO_OIDC_CLIENT_ID` | _(required for oidc)_ | Google OAuth2 client ID |
 | `HIPPO_OIDC_CLIENT_SECRET` | _(required for oidc)_ | Google OAuth2 client secret |
 | `HIPPO_PUBLIC_URL` | _(required for oidc)_ | public base URL, e.g. `https://hippo.example.com` (used for OAuth redirect URI) |
@@ -67,13 +67,22 @@ Then — `OPENAI_*` vars must be in the process environment, so load `.env` befo
 
 ## Authentication
 
-Hippo supports three auth modes, set via `HIPPO_AUTH_MODE`:
+Hippo supports four auth modes, set via `HIPPO_AUTH_MODE`:
 
 - **`none`** (default) — no authentication; every request is treated as a local admin. Suitable for personal use or private networks.
 - **`oidc`** — in-app Google sign-in. Users are redirected to `/auth/login`, authenticate with Google, and receive a session cookie. Requires `HIPPO_OIDC_CLIENT_ID`, `HIPPO_OIDC_CLIENT_SECRET`, `HIPPO_SECRET_KEY`, and `HIPPO_PUBLIC_URL`. Optionally restrict to a single Google Workspace domain with `HIPPO_ALLOWED_DOMAIN`.
 - **`iap`** — deployed behind [GCP Identity-Aware Proxy](https://cloud.google.com/iap). Hippo verifies the `x-goog-iap-jwt-assertion` header on every request. Requires `HIPPO_IAP_AUDIENCE`.
+- **`password`** — built-in email + password login. Users sign in with their email and a password that is argon2id-hashed in the database. Accounts are locked for 15 minutes after 5 consecutive failures. Sessions are 7-day signed cookies. Requires `HIPPO_SECRET_KEY`; no `HIPPO_OIDC_*` settings are needed. **There are no default credentials** — the first owner must be bootstrapped via the CLI (see below) or the SP3 setup wizard (not yet built).
 
 **Bearer tokens** are accepted in every mode for headless clients (Slack bot, MCP server, CI scripts). Create a token with `hippo token create <email>`.
+
+**Password mode bootstrap.** The SP3 setup wizard (not yet built) will be the normal first-run flow. Until then, create the first owner with the break-glass CLI:
+
+    hippo user set-password owner@example.com --role owner
+
+The command prompts for the password twice (no echo). Re-run it at any time to reset a forgotten password or unlock a locked-out account; the `--role` option is only applied when creating a new user (existing users keep their current role unless `--role` is given).
+
+**Password mode UI.** When `auth_mode=password`, the React SPA shows a login form (email + password) instead of the Google button. Signed-in users can change their own password from the Settings → Tokens tab (self-service: requires the current password). Admins can reset any lower-tier user's password from the Users tab; the new password is displayed once and must be copied immediately.
 
 **Roles:** users have one of three roles — `user` (default), `admin`, or `owner`. Set roles with `hippo role set <email> <role>`. Content is tiered by the folder it lives in — a `user`-tier folder is visible to everyone; an `admin`-tier folder is visible to `admin` and `owner`; an `owner`-tier folder is visible only to `owner`. Admins can manage folders and tokens via the API or the Settings UI. Emails listed in `HIPPO_ADMIN_EMAILS` are always promoted to `owner` on sign-in.
 
@@ -96,19 +105,20 @@ New API endpoints backing the Settings UI: `GET /users`, `PUT /users/{email}/rol
 
 ## CLI
 
-    hippo sync [FOLDER] [--watch]   # register+sync folder / re-sync all synced folders
-    hippo add FILE                  # ingest one file
-    hippo search QUERY              # debug hybrid search
-    hippo reindex                   # re-embed after model change
-    hippo eval eval/golden.yaml     # retrieval recall@k
-    hippo serve                     # FastAPI server
-    hippo role set EMAIL ROLE       # set user role (user|admin|owner)
-    hippo role list                 # list all users and their roles
-    hippo token create EMAIL        # create a bearer token for headless access
-    hippo token list EMAIL          # list a user's tokens (never the secret)
-    hippo token revoke EMAIL ID     # revoke a token by id
-    hippo mcp                       # MCP server over stdio (local single-user, owner)
-    hippo slack                     # Slack bot over Socket Mode (read-only Q&A)
+    hippo sync [FOLDER] [--watch]         # register+sync folder / re-sync all synced folders
+    hippo add FILE                        # ingest one file
+    hippo search QUERY                    # debug hybrid search
+    hippo reindex                         # re-embed after model change
+    hippo eval eval/golden.yaml           # retrieval recall@k
+    hippo serve                           # FastAPI server
+    hippo role set EMAIL ROLE             # set user role (user|admin|owner)
+    hippo role list                       # list all users and their roles
+    hippo token create EMAIL              # create a bearer token for headless access
+    hippo token list EMAIL                # list a user's tokens (never the secret)
+    hippo token revoke EMAIL ID           # revoke a token by id
+    hippo user set-password EMAIL [--role ROLE]   # set/reset a local password (password mode bootstrap)
+    hippo mcp                             # MCP server over stdio (local single-user, owner)
+    hippo slack                           # Slack bot over Socket Mode (read-only Q&A)
 
 ## Running with Docker
 
