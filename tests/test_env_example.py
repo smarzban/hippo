@@ -24,6 +24,9 @@ def test_env_example_covers_every_setting() -> None:
 
 
 def test_env_example_documents_provider_keys() -> None:
-    text = ENV_EXAMPLE.read_text()
-    assert "OPENAI_API_KEY=" in text
-    assert "OPENAI_BASE_URL=" in text
+    lines = ENV_EXAMPLE.read_text().splitlines()
+    # OPENAI_API_KEY must be an ACTIVE (uncommented) line — it's the one var a new user
+    # must set, so a commented-out example would be a silent no-op for the default path.
+    assert any(re.match(r"\s*OPENAI_API_KEY=", ln) for ln in lines)
+    # OPENAI_BASE_URL only needs to be documented (it's commented in the default path).
+    assert any("OPENAI_BASE_URL=" in ln for ln in lines)

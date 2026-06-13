@@ -47,6 +47,30 @@ describe("processCitations", () => {
     expect(markerNums(processed)).toEqual([1, 2]);
   });
 
+  it("separates a citation touching an inline-code span on either side", () => {
+    // code span glued directly to the citation: `make`[...]
+    const before = processCitations("Run `make`[Polly Telegram Integration > Webhook setup].", idx);
+    expect(before.processed).not.toContain("``");
+    expect(markerNums(before.processed)).toEqual([1]);
+
+    // citation glued directly to a following code span: [...]`make`
+    const after = processCitations("[Polly Telegram Integration > Webhook setup]`make` runs it.", idx);
+    expect(after.processed).not.toContain("``");
+    expect(markerNums(after.processed)).toEqual([1]);
+  });
+
+  it("handles three citations back-to-back", () => {
+    const { processed, sources } = processCitations(
+      "[Polly Telegram Integration > Overview]" +
+        "[Polly Telegram Integration > Webhook setup]" +
+        "[Project X Decision > Rationale]",
+      idx,
+    );
+    expect(sources).toHaveLength(3);
+    expect(processed).not.toContain("``");
+    expect(markerNums(processed)).toEqual([1, 2, 3]);
+  });
+
   it("supports the fullwidth 【…】 citation form", () => {
     const { processed, sources } = processCitations(
       "See 【Project X Decision > Rationale】 for why.",

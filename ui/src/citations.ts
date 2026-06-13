@@ -94,10 +94,12 @@ export function processCitations(
 ): { processed: string; sources: Source[] } {
   const sources: Source[] = [];
   const keyToNum = new Map<string, number>();
-  // Citations the model emits back-to-back ([a > b][c > d]) would otherwise produce
-  // two adjacent backtick-wrapped sentinels (`⟦1⟧``⟦2⟧`); CommonMark reads the middle
-  // `` as one span and the marker is lost. Insert a space between sentinels whose
-  // source citations were adjacent so each survives as its own inline-code node.
+  // Each citation becomes a backtick-wrapped sentinel (`⟦N⟧`). If a backtick sits
+  // immediately on either side, the runs merge into one CommonMark code span and the
+  // marker is lost (seen as stray backticks). That happens with back-to-back citations
+  // (`⟦1⟧``⟦2⟧`), and equally with a literal inline-code span touching a citation
+  // (`make`[a > b] or [a > b]`make`). Pad the colliding side with a space so each
+  // sentinel survives as its own inline-code node.
   let prevEnd = -1;
   const processed = text.replace(CITE_RE, (m: string, a: string, b: string, offset: number) => {
     const inner = (a ?? b ?? "").trim();
@@ -109,9 +111,12 @@ export function processCitations(
       keyToNum.set(key, num);
       sources.push({ num, ...r });
     }
-    const sep = offset === prevEnd ? " " : "";
+    // Lead collides with a preceding marker (offset === prevEnd) or inline-code span;
+    // trail collides with a following inline-code span.
+    const lead = offset === prevEnd || text[offset - 1] === "`" ? " " : "";
+    const trail = text[offset + m.length] === "`" ? " " : "";
     prevEnd = offset + m.length;
-    return sep + "`⟦" + num + "⟧`";
+    return lead + "`⟦" + num + "⟧`" + trail;
   });
   return { processed, sources };
 }
