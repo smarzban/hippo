@@ -131,15 +131,21 @@ function SourcesPanel() {
 
 function UsersPanel() {
   const [rows, setRows] = useState<any[]>([]);
+  const [note, setNote] = useState("");
   const load = useCallback(() => { getJSON("/users").then(setRows).catch(() => setRows([])); }, []);
   useEffect(() => { load(); }, [load]);
   const setRole = async (email: string, role: string) => {
-    await fetch(`/users/${encodeURIComponent(email)}/role`, { method: "PUT",
+    const r = await fetch(`/users/${encodeURIComponent(email)}/role`, { method: "PUT",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
-    load();
+    if (!r.ok) {
+      const detail = await r.json().then((b) => b.detail).catch(() => `error ${r.status}`);
+      setNote(detail);
+    } else setNote("");
+    load();   // reload reverts the dropdown if the change was refused
   };
   return (
     <div className="panel">
+      <span className="note">{note}</span>
       <table><tbody>
         {rows.map((u) => (
           <tr key={u.email}><td>{u.email}</td>
