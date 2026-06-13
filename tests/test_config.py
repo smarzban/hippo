@@ -56,6 +56,12 @@ def test_auth_mode_typo_rejected():
         Settings(_env_file=None, auth_mode="oidcc")
 
 
+def test_password_is_a_valid_auth_mode():
+    from hippo.config import Settings
+    s = Settings(_env_file=None, auth_mode="password")
+    assert s.auth_mode == "password"
+
+
 def test_slack_settings_defaults_off():
     s = Settings(_env_file=None)
     assert s.slack_enabled is False
