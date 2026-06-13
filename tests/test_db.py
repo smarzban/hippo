@@ -83,3 +83,19 @@ def test_legacy_schema_raises_clear_error(tmp_path):
     con.close()
     with pytest.raises(RuntimeError, match="recreate the database"):
         connect(p, embedding_dim=32)
+
+
+def test_legacy_schema_with_source_id_present_still_rejected(tmp_path):
+    """Defense-in-depth (PR #11 review, LOW): a hybrid table that grew a folder_id
+    but kept the legacy source_id column is still rejected — the source_id signal
+    also trips the guard."""
+    import sqlite3
+
+    p = tmp_path / "hybrid.db"
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE documents (id INTEGER PRIMARY KEY, folder_id INTEGER, "
+                "source_id INTEGER, path TEXT)")
+    con.commit()
+    con.close()
+    with pytest.raises(RuntimeError, match="recreate the database"):
+        connect(p, embedding_dim=32)

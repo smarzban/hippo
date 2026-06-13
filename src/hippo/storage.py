@@ -256,6 +256,11 @@ class Storage:
                     (parent_id, name, prow[0], origin, location),
                 )
             except sqlite3.IntegrityError as e:
+                # Either the (parent_id, name) sibling-uniqueness or the non-null
+                # location-uniqueness index fired.
+                if location is not None and self.con.execute(
+                    "SELECT 1 FROM folders WHERE location=?", (location,)).fetchone():
+                    raise ValueError(f"location {location!r} is already mounted") from e
                 raise ValueError(f"a folder named {name!r} already exists here") from e
             return cur.lastrowid
 

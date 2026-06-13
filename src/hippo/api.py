@@ -212,6 +212,17 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=403, detail="owner only")
         return user
 
+    def _require_folder_tier(user: AuthenticatedUser, folder) -> None:
+        """A folder may only be managed (renamed/moved/deleted/resynced/created-under)
+        by a caller whose rank is at least the folder's tier — the same rule that
+        gates reading it. require_admin only sets the rank≥1 floor; without this, an
+        admin could move/delete/resync an owner-tier folder (and a move rewrites the
+        whole subtree's tier, leaking owner-only docs down to everyone). Folder ids
+        are guessable, so this must be enforced server-side, not by visibility."""
+        if rank(user.role) < rank(folder.min_role):
+            raise HTTPException(status_code=403,
+                detail="cannot manage a folder above your tier")
+
     if settings.auth_mode == "oidc":
         if not settings.secret_key:
             raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=oidc")
@@ -373,8 +384,15 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     @app.patch("/folders/{folder_id}")
     async def patch_folder(folder_id: int, body: FolderPatch,
                            user: AuthenticatedUser = Depends(require_admin)):
-        if store.get_folder(folder_id) is None:
+        f = store.get_folder(folder_id)
+        if f is None:
             raise HTTPException(status_code=404, detail="folder not found")
+        _require_folder_tier(user, f)  # can't rename/move a folder above your tier
+        if body.parent_id is not None:
+            dest = store.get_folder(body.parent_id)
+            if dest is None:
+                raise HTTPException(status_code=404, detail="parent folder not found")
+            _require_folder_tier(user, dest)  # nor move it into one above your tier
         try:
             if body.name is not None:
                 store.rename_folder(folder_id, body.name)
@@ -386,6 +404,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.delete("/folders/{folder_id}")
     async def delete_folder(folder_id: int, user: AuthenticatedUser = Depends(require_admin)):
+        f = store.get_folder(folder_id)
+        if f is None:
+            raise HTTPException(status_code=404, detail="folder not found")
+        _require_folder_tier(user, f)  # can't delete a folder above your tier
         try:
             ok = store.delete_folder(folder_id)
         except ValueError as e:
@@ -399,6 +421,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         f = store.get_folder(folder_id)
         if f is None:
             raise HTTPException(status_code=404, detail="folder not found")
+        _require_folder_tier(user, f)  # can't resync (and prune) a folder above your tier
         if f.origin != "folder" or not f.location:
             raise HTTPException(status_code=400, detail="only filesystem-synced folders resync")
         if not Path(f.location).is_dir():

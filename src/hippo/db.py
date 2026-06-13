@@ -20,6 +20,11 @@ CREATE TABLE IF NOT EXISTS folders (
 -- as distinct), so enforce unique root names explicitly.
 CREATE UNIQUE INDEX IF NOT EXISTS folders_root_name
     ON folders(name) WHERE parent_id IS NULL;
+-- A mounted filesystem path / repo maps to exactly one folder: enforce unique
+-- non-null location so a second mount of the same path can't create an ambiguous
+-- duplicate that sync would then populate into the wrong (older) folder row.
+CREATE UNIQUE INDEX IF NOT EXISTS folders_location
+    ON folders(location) WHERE location IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS documents (
     id INTEGER PRIMARY KEY,
@@ -95,11 +100,13 @@ def connect(db_path: Path | str, embedding_dim: int) -> sqlite3.Connection:
     tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if "documents" in tables:
         doc_cols = {r[1] for r in con.execute("PRAGMA table_info(documents)")}
-        if "folder_id" not in doc_cols:
+        # Reject on either signal: missing folder_id OR a leftover source_id column
+        # (the pre-SP1 schema had documents.source_id and a sources table).
+        if "folder_id" not in doc_cols or "source_id" in doc_cols:
             raise RuntimeError(
-                "incompatible legacy schema (pre-SP1, no folders table). SP1 uses a "
-                "fresh schema with no data migration — recreate the database: "
-                f"`rm {db_path}` and re-sync."
+                "incompatible legacy schema (pre-SP1: documents.source_id / no folders "
+                "table). SP1 uses a fresh schema with no data migration — recreate the "
+                f"database: `rm {db_path}` and re-sync."
             )
 
     con.executescript(SCHEMA)
