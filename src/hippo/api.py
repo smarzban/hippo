@@ -99,7 +99,23 @@ class TokenIn(BaseModel):
     name: str = ""
 
 
+class ProfileIn(BaseModel):
+    name: str = ""  # email is read-only; only the display name is self-editable
+
+
+class CreateUserIn(BaseModel):
+    email: str
+    role: str = "user"  # validated in the handler so we return 400, not 422
+    name: str = ""
+
+
 MIN_PASSWORD_LEN = 8
+MAX_NAME_LEN = 100
+# Reject multiple @, empty local/domain labels, and trailing dots (e.g. a@b@c.com,
+# a@.com, a@b.). Not RFC-perfect — a sanity gate so we never create a login identity
+# that can't be typed back. Single @, non-empty local, dotted non-empty domain labels.
+import re as _re
+_EMAIL_RE = _re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 
 def _usage_limits(settings: Settings) -> UsageLimits:
@@ -452,7 +468,23 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.get("/me")
     async def me(user: AuthenticatedUser = Depends(verify_request)):
-        return {"email": user.email, "role": user.role, "auth_mode": auth_mode}
+        prof = store.get_profile(user.email)
+        return {"email": user.email, "role": user.role, "auth_mode": auth_mode,
+                "name": prof["name"] if prof else ""}
+
+    @app.patch("/me")
+    async def update_me(body: ProfileIn, user: AuthenticatedUser = Depends(verify_request)):
+        # Only the display name is self-editable; email is the login identity and
+        # stays read-only here.
+        name = body.name.strip()
+        if len(name) > MAX_NAME_LEN:
+            raise HTTPException(status_code=400,
+                detail=f"name must be at most {MAX_NAME_LEN} characters")
+        # ensure a row exists first (covers none-mode / not-yet-persisted identities)
+        # so set_name actually persists and we don't report a name we didn't store.
+        store.ensure_user(user.email)
+        store.set_name(user.email, name)
+        return {"email": user.email, "role": user.role, "auth_mode": auth_mode, "name": name}
 
     @app.post("/chat")
     async def chat(request: Request, user: AuthenticatedUser = Depends(verify_request)):
@@ -624,6 +656,50 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         admins = settings.admin_email_list
         return [{"email": e, "role": "owner" if e in admins else r}
                 for e, r in store.list_users()]
+
+    @app.post("/users")
+    async def create_user(body: CreateUserIn, user: AuthenticatedUser = Depends(require_admin)):
+        from .roles import VALID_ROLES
+        from .auth import check_domain, AuthError
+        target = body.email.strip().lower()
+        if not _EMAIL_RE.match(target):
+            raise HTTPException(status_code=400, detail="a valid email is required")
+        if body.role not in VALID_ROLES:
+            raise HTTPException(status_code=400,
+                detail=f"invalid role {body.role!r}; expected one of {list(VALID_ROLES)}")
+        # Effective-role guard: a HIPPO_ADMIN_EMAILS address is force-promoted to owner
+        # by resolve_role on every login, so creating ANY credential for it effectively
+        # creates an owner. Compare the EFFECTIVE role against the caller's tier — else a
+        # rank-1 admin could mint an admin-labelled login for a bootstrap-owner email and
+        # then authenticate as owner (same hole that admin_reset_password already guards).
+        effective_role = "owner" if target in settings.admin_email_list else body.role
+        if rank(effective_role) > rank(user.role):
+            raise HTTPException(status_code=403, detail="cannot create a user above your tier")
+        if len(body.name.strip()) > MAX_NAME_LEN:
+            raise HTTPException(status_code=400,
+                detail=f"name must be at most {MAX_NAME_LEN} characters")
+        # Domain gate: don't pre-create rows / mint passwords for accounts that
+        # resolve_role would refuse at login anyway (leaves a usable-looking but dead
+        # credential otherwise).
+        try:
+            check_domain(target, cfg.get("allowed_domain"))
+        except AuthError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        resp: dict = {"email": target, "role": body.role}
+        # Atomic insert-only create: race-safe duplicate detection (409), no overwrite.
+        if auth_mode == "password":
+            new_pw = secrets.token_urlsafe(12)   # >= MIN_PASSWORD_LEN; shown once
+            created = store.create_user(target, role=body.role, password_hash=hash_password(new_pw))
+            if created:
+                resp["password"] = new_pw
+        else:
+            # oidc/iap: the user becomes real on first sign-in; just pre-set the role
+            created = store.create_user(target, role=body.role)
+        if not created:
+            raise HTTPException(status_code=409, detail="a user with that email already exists")
+        if body.name.strip():
+            store.set_name(target, body.name.strip())
+        return resp
 
     @app.put("/users/{email}/role")
     async def set_user_role(email: str, body: RoleIn,

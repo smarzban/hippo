@@ -5,9 +5,9 @@ import { passwordChangeError } from "./auth";
 type Role = "user" | "admin" | "owner";
 
 export function tabsForRole(role: string): string[] {
-  if (role === "user") return ["Tokens"];
-  const tabs = ["Folders", "Users", "Tokens", "Status"];
-  if (role === "owner") tabs.push("Instance");
+  if (role === "user") return ["My Profile"];
+  const tabs = ["Folders", "Users", "My Profile", "Status"];
+  if (role === "owner") tabs.push("System config");
   return tabs;
 }
 
@@ -31,16 +31,49 @@ export default function Settings({ role, authMode, onClose }: { role: Role; auth
           <button key={t} className={t === tab ? "active" : ""} onClick={() => setTab(t)}>{t}</button>
         ))}
       </nav>
-      {tab === "Tokens" && (
+      {tab === "My Profile" && (
         <>
-          <TokensPanel admin={role !== "user"} />
+          <ProfilePanel />
           {authMode === "password" && <PasswordPanel />}
+          <TokensPanel admin={role !== "user"} />
         </>
       )}
       {tab === "Folders" && <FoldersPanel />}
       {tab === "Users" && <UsersPanel authMode={authMode} />}
       {tab === "Status" && <StatusPanel />}
-      {tab === "Instance" && <InstancePanel />}
+      {tab === "System config" && <InstancePanel />}
+    </div>
+  );
+}
+
+function ProfilePanel() {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [saved, setSaved] = useState("");
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    getJSON("/me").then((m) => { setEmail(m.email); setName(m.name || ""); setSaved(m.name || ""); })
+      .catch(() => setNote("couldn't load profile"));
+  }, []);
+  const save = async () => {
+    const r = await fetch("/me", { method: "PATCH",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+    if (r.ok) { const b = await r.json(); setSaved(b.name || ""); setName(b.name || ""); setNote("saved"); }
+    else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+  };
+  return (
+    <div className="panel">
+      <p>Your profile</p>
+      <div className="row">
+        <label>Email</label>
+        <input value={email} readOnly disabled title="Email is your login identity and can't be changed here" />
+      </div>
+      <div className="row">
+        <label>Name</label>
+        <input placeholder="your display name" value={name} onChange={(e) => setName(e.target.value)} />
+        <button onClick={save} disabled={name === saved}>Save</button>
+        <span className="note">{note}</span>
+      </div>
     </div>
   );
 }
@@ -197,7 +230,10 @@ function FoldersPanel() {
 function UsersPanel({ authMode }: { authMode: string }) {
   const [rows, setRows] = useState<any[]>([]);
   const [note, setNote] = useState("");
-  const [resetPw, setResetPw] = useState<{ email: string; pw: string } | null>(null);
+  const [secret, setSecret] = useState<{ email: string; pw: string; verb: string } | null>(null);
+  const [newEmail, setNewEmail] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newRole, setNewRole] = useState("user");
   const load = useCallback(() => { getJSON("/users").then(setRows).catch(() => setRows([])); }, []);
   useEffect(() => { load(); }, [load]);
   const setRole = async (email: string, role: string) => {
@@ -209,26 +245,46 @@ function UsersPanel({ authMode }: { authMode: string }) {
     } else setNote("");
     load();   // reload reverts the dropdown if the change was refused
   };
+  const create = async () => {
+    const r = await fetch("/users", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: newEmail.trim(), role: newRole, name: newName.trim() }) });
+    if (r.ok) {
+      const b = await r.json();
+      setNote("");
+      setNewEmail(""); setNewName(""); setNewRole("user");
+      if (b.password) setSecret({ email: b.email, pw: b.password, verb: "Initial password for" });
+      load();
+    } else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+  };
   const reset = async (email: string) => {
     const r = await fetch(`/users/${encodeURIComponent(email)}/password`, { method: "POST",
       headers: { "Content-Type": "application/json" }, body: "{}" });
-    if (r.ok) { const b = await r.json(); setResetPw({ email, pw: b.password }); }
+    if (r.ok) { const b = await r.json(); setSecret({ email, pw: b.password, verb: "Password reset for" }); }
     else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
   };
-  if (resetPw) {
+  if (secret) {
     return (
       <div className="panel">
-        <p>Password reset for <strong>{resetPw.email}</strong> — copy now, it won't be shown again:</p>
+        <p>{secret.verb} <strong>{secret.email}</strong> — copy now, it won't be shown again:</p>
         <div className="secret">
-          <code>{resetPw.pw}</code>
-          <button onClick={() => navigator.clipboard?.writeText(resetPw.pw)}>Copy</button>
-          <button onClick={() => setResetPw(null)}>Done</button>
+          <code>{secret.pw}</code>
+          <button onClick={() => navigator.clipboard?.writeText(secret.pw)}>Copy</button>
+          <button onClick={() => setSecret(null)}>Done</button>
         </div>
       </div>
     );
   }
   return (
     <div className="panel">
+      <div className="row">
+        <input placeholder="new user email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
+        <input placeholder="name (optional)" value={newName} onChange={(e) => setNewName(e.target.value)} />
+        <select value={newRole} onChange={(e) => setNewRole(e.target.value)}>
+          {["user", "admin", "owner"].map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <button onClick={create} disabled={!newEmail.trim()}>Create user</button>
+      </div>
       <span className="note">{note}</span>
       <table><tbody>
         {rows.map((u) => (

@@ -64,6 +64,7 @@ END;
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT '',                        -- display name (self-editable)
     role TEXT NOT NULL DEFAULT 'user'
         CHECK (role IN ('user','admin','owner')),
     password_hash TEXT,                                  -- NULL for oidc/iap users
@@ -118,6 +119,12 @@ def connect(db_path: Path | str, embedding_dim: int) -> sqlite3.Connection:
             )
 
     con.executescript(SCHEMA)
+    # Additive migration: users.name was added after the SP1 schema. Unlike the
+    # rejected legacy migration, this is a backward-compatible column add, so a
+    # database created between SP1 and now upgrades in place (no data loss).
+    user_cols = {r[1] for r in con.execute("PRAGMA table_info(users)")}
+    if "name" not in user_cols:
+        con.execute("ALTER TABLE users ADD COLUMN name TEXT NOT NULL DEFAULT ''")
     if con.execute("SELECT count(*) FROM folders").fetchone()[0] == 0:
         con.executemany(
             "INSERT INTO folders(parent_id, name, min_role, origin) "
