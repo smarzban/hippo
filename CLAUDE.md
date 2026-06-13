@@ -26,11 +26,16 @@ api.py         build_app(settings, model_override=None): /chat streams Vercel AI
                Serves ui/dist as static files when HIPPO_UI_DIST is set (single origin, :8000).
                Mounts FastMCP server at /mcp (HIPPO_MCP_ENABLED, default true) with _McpBearerAuth middleware (bearer token → role via _mcp_role contextvar).
 mcp_server.py  FastMCP server exposing search/read_document/list_documents/grep; mounted at /mcp in api.py with bearer-token auth + role filtering via the _mcp_role contextvar; `hippo mcp` runs it over stdio (as admin, no token).
-auth.py        AuthenticatedUser(email, role), AuthError, check_domain, IapVerifier (ES256 IAP assertions, injectable key_fetcher),
+auth.py        AuthenticatedUser(email, role), AuthError, check_domain, resolve_role (shared identity→role: normalize+domain-gate+ensure_user+admin-bootstrap, used by api.py and slack_bot.py),
+               IapVerifier (ES256 IAP assertions, injectable key_fetcher),
                validate_google_id_token (claims-only, code-flow tokens). Mode wiring lives in api.py: none|oidc|iap + bearer tokens any mode.
                Role FILTERING lives in storage.py, not here.
 chunking.py    chunk_markdown(): heading-aware, atomic code fences, char-based ~750-token chunks; overlap tail is re-checked against max_chars before prepending
-cli.py         Typer: sync [--watch] / add / search / reindex / serve / mcp / eval / backup / role set/list / token create
+cli.py         Typer: sync [--watch] / add / search / reindex / serve / mcp / slack / eval / backup / role set/list / token create
+slack_bot.py   Slack Q&A bot (roadmap item 7): Socket Mode via slack-bolt. Pure helpers
+               (surface_role/build_history/format_answer/answer_question) + handle_event
+               adapter (tested with a fake client) + build_slack_app wiring. Split-by-surface
+               access: DM=asker's role, channel @mention=everyone-only. `hippo slack` runs it.
 config.py      Settings, env prefix HIPPO_ (pydantic-settings)
 db.py          connect() -> sqlite3: schema, WAL, sqlite-vec, FTS5 + sync triggers
 embeddings.py  Embedder protocol; OpenAIEmbedder (default text-embedding-3-small); FakeEmbedder (deterministic, tests/offline)
@@ -55,7 +60,7 @@ Vite dev-server proxies /chat,/ingest,/documents,/sources to :8000. Tool parts r
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (175 tests, <2s, ZERO network — must stay that way)
+uv run pytest                      # full suite (190+ tests, <5s, ZERO network — must stay that way)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all registered sources
 uv run hippo serve                 # API :8000
 cd ui && npm run dev               # chat UI :5173
@@ -89,21 +94,22 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 - **Tool output is framed as ⟦untrusted document data⟧** — don't strip the delimiters; they are the prompt-injection boundary enforced by the system-prompt "Untrusted content" rule.
 - **Retrieval methods take `role` keyword-only with no default** — a forgotten call site must be a TypeError, never an access-control leak. Same for HubDeps.role.
 
-## State (2026-06-12)
+## State (2026-06-13)
 
 v1 + review-hardening merged to main: storage/hybrid search, ingestion (folder sync + upload),
 enrichment, agent, API, CLI, React UI, eval harness. PR #2 landed two independent-review passes
-(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). 175/175 tests,
-eval 4/4 on seed fixtures, UI builds clean. Roadmap items 1+2 (auth/roles/sources) implemented on
-branch `build/auth-and-sources` (PR pending). Roadmap item 3 (production-readiness: ingestion limits,
-grounding enforcement, grep hardening, chunk/drawer fixes, `hippo backup`, Docker, CI, logging)
-implemented on branch `build/production-readiness` (PR #4 merged). Roadmap item 5 (.docx parsing via
-mammoth, `parse_bytes()` entry point, UI upload accepts .docx) implemented on branch
-`build/docx-parsing` (PR pending). Roadmap item 6 (MCP server: FastMCP at /mcp with bearer-token
-auth + role filtering, `hippo mcp` stdio command) implemented on branch `build/mcp-server` (PR pending).
-This completes the current round (items 1, 2, 3, 5, 6).
+(connection lock, safe reindex, embedding-model stamp, citation resolution, etc.). Roadmap items
+1+2 (auth/roles/sources) implemented on branch `build/auth-and-sources` (PR pending). Roadmap
+item 3 (production-readiness: ingestion limits, grounding enforcement, grep hardening, chunk/drawer
+fixes, `hippo backup`, Docker, CI, logging) implemented on branch `build/production-readiness`
+(PR #4 merged). Roadmap item 5 (.docx parsing via mammoth, `parse_bytes()` entry point, UI upload
+accepts .docx) implemented on branch `build/docx-parsing` (PR pending). Roadmap item 6 (MCP server:
+FastMCP at /mcp with bearer-token auth + role filtering, `hippo mcp` stdio command) implemented on
+branch `build/mcp-server` (PR pending). Roadmap item 7 (Slack bot: Socket Mode, role-filtered Q&A,
+DM+channel @mention, thread-aware history) implemented on branch `build/slack-integration` (PR pending).
+190+ tests, eval 4/4 on seed fixtures, UI builds clean.
 
-**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. Next: scale (Postgres+pgvector), Slack, MCP client/connectors, settings UI.
+**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. Next: scale (Postgres+pgvector), MCP client/connectors, settings UI, deploy.
 
-**Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown), Slack bot
-(consumes POST /chat), PDF parsing (planned), Postgres+pgvector migration (reimplement Storage), hierarchical summaries, GraphRAG.
+**Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown),
+PDF parsing (planned), Postgres+pgvector migration (reimplement Storage), hierarchical summaries, GraphRAG.

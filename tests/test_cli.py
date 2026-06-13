@@ -106,6 +106,26 @@ def test_mcp_builder_lists_four_tools(tmp_path):
     assert names == {"search", "read_document", "list_documents", "grep"}
 
 
+def test_slack_refuses_when_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("HIPPO_SLACK_ENABLED", "false")
+    monkeypatch.setenv("HIPPO_DB_PATH", str(tmp_path / "h.db"))
+    monkeypatch.setenv("HIPPO_EMBEDDING_MODEL", "fake")
+    result = runner.invoke(app, ["slack"])
+    assert result.exit_code != 0
+    assert "HIPPO_SLACK_ENABLED" in result.output
+
+
+def test_slack_refuses_without_tokens(monkeypatch, tmp_path):
+    monkeypatch.setenv("HIPPO_SLACK_ENABLED", "true")
+    monkeypatch.setenv("HIPPO_SLACK_BOT_TOKEN", "")
+    monkeypatch.setenv("HIPPO_SLACK_APP_TOKEN", "")
+    monkeypatch.setenv("HIPPO_DB_PATH", str(tmp_path / "h.db"))
+    monkeypatch.setenv("HIPPO_EMBEDDING_MODEL", "fake")
+    result = runner.invoke(app, ["slack"])
+    assert result.exit_code != 0
+    assert "token" in result.output.lower()
+
+
 def test_token_list_and_revoke(tmp_path):
     env = _env(tmp_path)
     create = runner.invoke(app, ["token", "create", "a@x.com"], env=env)

@@ -2,8 +2,13 @@
 rest of the codebase never knows how the email was established (spec §1)."""
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import jwt
+
+if TYPE_CHECKING:
+    from .config import Settings
+    from .storage import Storage
 
 
 class AuthError(Exception):
@@ -19,6 +24,19 @@ class AuthenticatedUser:
 def check_domain(email: str, allowed_domain: str) -> None:
     if allowed_domain and not email.lower().endswith("@" + allowed_domain.lower()):
         raise AuthError(f"only {allowed_domain} accounts are allowed")
+
+
+def resolve_role(store: "Storage", settings: "Settings", email: str) -> str:
+    """Canonical identity → role: normalize, enforce the domain gate, ensure the
+    user row (first-timers default to 'developer'), then apply the admin-email
+    bootstrap. Raises AuthError if the email is out of the allowed domain. Shared
+    by the HTTP bearer path (api.py) and the Slack bot."""
+    email = email.strip().lower()
+    check_domain(email, settings.allowed_domain)  # raises AuthError
+    role = store.ensure_user(email)
+    if email in settings.admin_email_list:
+        role = "admin"  # env bootstrap always wins (spec §1)
+    return role
 
 
 class _KeyCache:

@@ -159,6 +159,47 @@ def mcp():
 
 
 @app.command()
+def slack():
+    """Run the Slack bot over Socket Mode (read-only Q&A; requires HIPPO_SLACK_*)."""
+    import asyncio
+
+    from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+
+    from .agent import build_agent
+    from .slack_bot import build_slack_app
+
+    settings = Settings()
+    if not settings.slack_enabled:
+        typer.echo("Slack bot is disabled. Set HIPPO_SLACK_ENABLED=true to run it.", err=True)
+        raise typer.Exit(code=1)
+    if not settings.slack_bot_token or not settings.slack_app_token:
+        typer.echo("Missing Slack tokens: set HIPPO_SLACK_BOT_TOKEN and "
+                   "HIPPO_SLACK_APP_TOKEN.", err=True)
+        raise typer.Exit(code=1)
+    if not settings.allowed_domain:
+        # The Slack bot is reachable by the whole workspace (incl. guests). Without
+        # a domain gate, every Slack profile email is auto-provisioned as developer
+        # and can query everyone-access docs. Strongly recommend setting it.
+        typer.echo("WARNING: HIPPO_ALLOWED_DOMAIN is unset — every Slack workspace "
+                   "user (including guests) can query Hippo. Set it to your work "
+                   "domain (e.g. example.com) to gate access.", err=True)
+
+    con = connect(settings.db_path, embedding_dim=settings.embedding_dim)
+    store = Storage(con, build_embedder(settings))
+    agent = build_agent(settings.chat_model)
+    slack_app = build_slack_app(store, agent, settings)
+
+    async def _run():
+        # AsyncSocketModeHandler opens an aiohttp session in its constructor, which
+        # requires a running event loop — so build it inside asyncio.run, not before.
+        handler = AsyncSocketModeHandler(slack_app, settings.slack_app_token)
+        typer.echo("Hippo Slack bot connecting over Socket Mode…")
+        await handler.start_async()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def serve(host: str = "127.0.0.1", port: int = 8000):
     """Run the API server."""
     import logging

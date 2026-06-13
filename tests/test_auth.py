@@ -1,5 +1,6 @@
 import base64
 import json
+import sqlite3
 import time
 
 import jwt
@@ -7,7 +8,35 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from hippo.auth import AuthError, IapVerifier, check_domain, validate_google_id_token
+from hippo.auth import AuthError, IapVerifier, check_domain, resolve_role, validate_google_id_token
+from hippo.config import Settings
+from hippo.db import connect
+from hippo.embeddings import FakeEmbedder
+from hippo.storage import Storage
+
+
+def _store(tmp_path):
+    con = connect(tmp_path / "h.db", embedding_dim=8)
+    return Storage(con, FakeEmbedder(dim=8))
+
+
+def test_resolve_role_first_timer_is_developer(tmp_path):
+    store = _store(tmp_path)
+    settings = Settings(allowed_domain="example.com")
+    assert resolve_role(store, settings, "new.person@example.com") == "developer"
+
+
+def test_resolve_role_admin_bootstrap_wins(tmp_path):
+    store = _store(tmp_path)
+    settings = Settings(allowed_domain="example.com", admin_emails="boss@example.com")
+    assert resolve_role(store, settings, "Boss@Example.com") == "admin"
+
+
+def test_resolve_role_out_of_domain_raises(tmp_path):
+    store = _store(tmp_path)
+    settings = Settings(allowed_domain="example.com")
+    with pytest.raises(AuthError):
+        resolve_role(store, settings, "outsider@gmail.com")
 
 AUD = "/projects/1/global/backendServices/2"
 
