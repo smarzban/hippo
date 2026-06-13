@@ -104,6 +104,35 @@ label.upload-btn:hover, a.upload-btn:hover { border-color: var(--accent); color:
 }
 .signin h1 { font-size: 1.5rem; margin: 0.5rem 0; }
 .signin p { font-size: 0.95rem; margin: 0.75rem 0 1.5rem; }
+.login-form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+}
+.login-form input {
+  width: min(320px, 88vw);
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.95rem;
+  outline: none;
+}
+.login-form input:focus { border-color: var(--accent); }
+.linklike {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+.linklike:hover { text-decoration: underline; }
 
 /* ---------- conversation ---------- */
 main { flex: 1; overflow-y: auto; padding: 1.25rem 0; }
