@@ -544,6 +544,37 @@ class Storage:
             cur = self.con.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
         return cur.rowcount > 0
 
+    # -- config store (SP3) --------------------------------------------------
+
+    SETUP_COMPLETE_KEY = "setup_complete"
+
+    def get_config(self, key: str) -> str | None:
+        with self._lock:
+            row = self.con.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_config(self, key: str, value: str) -> None:
+        with self._lock, self.con:
+            self.con.execute(
+                "INSERT INTO config(key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+
+    def all_config(self) -> dict[str, str]:
+        with self._lock:
+            return {k: v for k, v in self.con.execute("SELECT key, value FROM config")}
+
+    def is_setup_complete(self) -> bool:
+        return self.get_config(self.SETUP_COMPLETE_KEY) == "1"
+
+    def mark_setup_complete(self) -> None:
+        self.set_config(self.SETUP_COMPLETE_KEY, "1")
+
+    def document_count(self) -> int:
+        with self._lock:
+            return self.con.execute("SELECT count(*) FROM documents").fetchone()[0]
+
     # -- search --------------------------------------------------------------
 
     RRF_K = 60
