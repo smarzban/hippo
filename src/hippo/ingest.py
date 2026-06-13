@@ -143,8 +143,21 @@ def sync_folder(folder: Path, store: Storage, *, parent_id: int, max_chars: int,
                    enricher=enricher, max_doc_chars=max_doc_chars)
     report = SyncReport()
     seen: set[str] = set()
+    folder_resolved = folder.resolve()
+
+    def _escapes_mount(p: Path) -> bool:
+        """True if p's real target is outside the mounted folder. A symlink planted
+        inside an allowlisted directory (allowed/x.md -> /etc/passwd) would otherwise
+        exfiltrate arbitrary host files through retrieval — so we skip such entries,
+        keeping ingestion inside the HIPPO_SOURCE_ROOTS-checked mount root."""
+        try:
+            rp = p.resolve()
+        except OSError:
+            return True
+        return rp != folder_resolved and folder_resolved not in rp.parents
+
     for path in sorted(folder.rglob("*")):
-        if _ignored(path):
+        if _ignored(path) or _escapes_mount(path):
             continue
         if path.is_file() and path.suffix.lower() in SUPPORTED:
             seen.add(str(path))

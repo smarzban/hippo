@@ -574,6 +574,17 @@ class Storage:
             cur = self.con.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
         return cur.rowcount > 0
 
+    def token_owner(self, token_id: int) -> tuple[str, str] | None:
+        """(owner email, stored owner role) for a token id, or None if no such token.
+        Lets the API tier-check a cross-user revoke against the token owner's role."""
+        with self._lock:
+            row = self.con.execute(
+                "SELECT u.email, u.role FROM tokens t JOIN users u ON u.id = t.user_id "
+                "WHERE t.id=?",
+                (token_id,),
+            ).fetchone()
+        return (row[0], row[1]) if row else None
+
     # -- config store (SP3) --------------------------------------------------
 
     SETUP_COMPLETE_KEY = "setup_complete"

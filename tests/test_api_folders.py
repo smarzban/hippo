@@ -109,7 +109,8 @@ def test_duplicate_location_mount_rejected(tmp_path):
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "a.md").write_text("# A\n\nhello")
-    c = TestClient(build_app(_settings(tmp_path)))  # none-mode owner; no source_roots needed
+    # folder mounts now require a HIPPO_SOURCE_ROOTS allowlist in every mode (MED-19)
+    c = TestClient(build_app(_settings(tmp_path, source_roots=str(tmp_path))))
     default_id = next(r["id"] for r in c.get("/folders").json() if r["name"] == "Default")
     first = c.post("/folders", json={"parent_id": default_id, "name": "Mirror",
                                      "origin": "folder", "location": str(docs)})
@@ -117,3 +118,50 @@ def test_duplicate_location_mount_rejected(tmp_path):
     dup = c.post("/folders", json={"parent_id": default_id, "name": "Mirror2",
                                    "origin": "folder", "location": str(docs)})
     assert dup.status_code == 400 and "mounted" in dup.json()["detail"]
+
+
+def test_folder_mount_requires_source_roots_even_in_none_mode(tmp_path):
+    """MED-19: in none mode with an empty allowlist, a folder mount used to be
+    permitted for any host directory (the caller is owner-tier), letting an
+    attacker mount / or ~/.ssh and exfiltrate files via chat/grep. The allowlist
+    is now mandatory in EVERY mode."""
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("# A\n\nhello")
+    c = TestClient(build_app(_settings(tmp_path)))  # none mode, no source_roots
+    default_id = next(r["id"] for r in c.get("/folders").json() if r["name"] == "Default")
+    r = c.post("/folders", json={"parent_id": default_id, "name": "Mirror",
+                                 "origin": "folder", "location": str(docs)})
+    assert r.status_code == 403 and "HIPPO_SOURCE_ROOTS" in r.json()["detail"]
+
+
+def test_folder_mount_outside_roots_rejected(tmp_path):
+    """Containment is enforced when an allowlist IS set: a path outside it is 403."""
+    roots = tmp_path / "allowed"
+    roots.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    c = TestClient(build_app(_settings(tmp_path, source_roots=str(roots))))
+    default_id = next(r["id"] for r in c.get("/folders").json() if r["name"] == "Default")
+    r = c.post("/folders", json={"parent_id": default_id, "name": "Mirror",
+                                 "origin": "folder", "location": str(outside)})
+    assert r.status_code == 403 and "outside HIPPO_SOURCE_ROOTS" in r.json()["detail"]
+
+
+def test_resync_rechecks_source_roots_on_stored_location(tmp_path):
+    """LOW-36: resync re-ingests the STORED location, so it must re-check the
+    allowlist — a path mounted while roots were loose must stop syncing once the
+    allowlist is tightened to exclude it."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a.md").write_text("# A\n\nhello")
+    # allowlist excludes `outside`; simulate a folder mounted before it was tightened
+    # by writing the row directly through Storage (bypassing the create-time check).
+    app = build_app(_settings(tmp_path, source_roots=str(tmp_path / "allowed")))
+    store = app.state.store
+    c = TestClient(app)
+    default_id = next(r["id"] for r in c.get("/folders").json() if r["name"] == "Default")
+    fid = store.create_folder(parent_id=default_id, name="Stale",
+                              origin="folder", location=str(outside))
+    r = c.post(f"/folders/{fid}/resync")
+    assert r.status_code == 403 and "outside HIPPO_SOURCE_ROOTS" in r.json()["detail"]

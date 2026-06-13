@@ -91,6 +91,28 @@ def test_db_and_dotfiles_ignored_by_sync(store, tmp_path):
     assert report.added == 1 and report.failed == 0
 
 
+def test_sync_skips_symlink_escaping_mount(store, tmp_path):
+    """Security (PR-2 review, MED): a symlink planted inside an allowlisted mount
+    whose target is OUTSIDE the mount must not be ingested — otherwise it
+    exfiltrates arbitrary host files (allowed/x.md -> /etc/secret) through retrieval,
+    bypassing the HIPPO_SOURCE_ROOTS containment that only checks the mount root."""
+    import os
+    secret = tmp_path / "secret.md"
+    secret.write_text("# Secret\n\nzztopsecret exfil bait")
+    docs = tmp_path / "mount"
+    docs.mkdir()
+    (docs / "ok.md").write_text("# OK\n\npublic content")
+    os.symlink(secret, docs / "leak.md")   # symlink inside mount -> outside file
+    folder_id = _default_root(store)
+    report = sync_folder(docs, store, parent_id=folder_id, max_chars=3000, overlap_chars=0)
+    assert report.added == 1                # only the real in-mount file
+    paths = {d.path for d in store.list_documents(role="owner")}
+    assert not any("leak" in p or "secret" in p for p in paths)
+    # and the escaping file's actual content was never ingested (grep is exact text,
+    # unlike FakeEmbedder hybrid search which matches deterministically)
+    assert store.grep("zztopsecret", role="owner") == []
+
+
 def test_upload_path_collision_distinct_contents_coexist(store):
     """L4: two different uploads sharing a filename must not silently overwrite."""
     ing = Ingestor(store, max_chars=3000, overlap_chars=0)

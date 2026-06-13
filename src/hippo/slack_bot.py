@@ -19,7 +19,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import UsageLimits
 
 from .agent import HubDeps
-from .auth import AuthError, resolve_role
+from .auth import AuthError, resolve_role, safe_log
 from .config import Settings
 from .storage import Storage
 
@@ -142,7 +142,7 @@ async def handle_event(event: dict, client, *, store: Storage, agent,
         try:
             role = resolve_role(store, settings, email)
         except AuthError:
-            log.warning("slack: out-of-domain user %s", email)
+            log.warning("slack: out-of-domain user %s", safe_log(email))
             await client.chat_postMessage(channel=channel, text=_NO_ACCESS, thread_ts=thread_ts)
             return
         role = surface_role(role, is_dm=is_dm)
