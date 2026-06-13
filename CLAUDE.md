@@ -1,12 +1,14 @@
-# Hippo — agentic team knowledge base
+# Hippo — agentic org knowledge base
 
 Feed it markdown/text/Google-Docs-exports; ask it questions in chat; it answers **only**
-from the indexed docs, with `[path > section]` citations. Personal-first, team-ready.
+from the indexed docs, with `[path > section]` citations. Org-level and role-governed
+(three-tier RBAC user/admin/owner, four auth modes, folder-scoped access, a browser
+setup wizard, MCP + Slack surfaces) — and still runs fine self-hosted for a single user.
 
 ## Read these before changing anything significant
 
-- `docs/superpowers/specs/2026-06-11-knowledge-hub-design.md` — the spec (what & how)
-- `docs/superpowers/specs/2026-06-11-knowledge-hub-decisions.md` — decision log (why; 9 ADRs incl. all rejected alternatives)
+- `docs/superpowers/specs/2026-06-11-knowledge-hub-design.md` — the original v1 spec (what & how). **Historical:** several listed "non-goals" (.docx parsing, Slack bot, multi-user auth) have since shipped, and the "personal-first" posture is now org-level — see State below.
+- `docs/superpowers/specs/2026-06-11-knowledge-hub-decisions.md` — decision log (why; 9 ADRs incl. all rejected alternatives). Historical, same caveat as the design spec.
 - `docs/superpowers/plans/2026-06-11-knowledge-hub.md` — the 15-task build plan (code has a few post-plan hardening fixes the plan text doesn't show)
 - `docs/superpowers/plans/2026-06-12-roadmap.md` — roadmap / action list (post-v1 hardening + features)
 - `docs/superpowers/plans/2026-06-13-sp1-roles-and-folders.md` — SP1 plan (roles & folder tree; merged PR #11)
@@ -25,14 +27,15 @@ agent.py       build_agent(model) -> Pydantic AI agent, deps=HubDeps(store, role
                System prompt enforces cite-everything + never-improvise + untrusted-content rule. defer_model_check=True (don't remove: construction must not need API keys)
 api.py         build_app(settings, model_override=None): /chat streams Vercel AI protocol via VercelAIAdapter.dispatch_request
                (deps + usage_limits kwargs work on pydantic-ai 1.107). verify_request real: modes none|oidc|iap|password + bearer tokens every mode.
-               require_admin (rank>=1) guards folder/user mutations; require_owner (rank>=2) guards owner-only ops. /me endpoint. /auth/login,/auth/callback,/auth/logout (oidc).
+               require_admin (rank>=1) guards folder/user mutations; require_owner (rank>=2) guards owner-only ops.
+               GET /me ({email,role,auth_mode,name}); PATCH /me (self-edit display name only — email is read-only login identity). /auth/login,/auth/callback,/auth/logout (oidc).
                password mode: SessionMiddleware (requires HIPPO_SECRET_KEY; build_app raises ValueError if unset); session keyed by user_id (surrogate).
                POST /auth/login (email+password, argon2id verify, lockout check, generic 401 — no enumeration), POST /auth/logout (clears session).
                GET /auth/config (public, returns {auth_mode}; no secrets). POST /me/password (self-service change; requires current password, 8-char minimum).
                POST /users/{email}/password (admin reset; returns new secret once; gated by tier so admins cannot reset higher-tier users).
                /ingest: size-checked against HIPPO_MAX_UPLOAD_BYTES (413) and HIPPO_MAX_DOC_CHARS (skipped); takes folder_ids (repeated form field): ingests into each destination folder; write-gated by can_write(caller_role, folder.min_role, folder.origin).
                /folders: GET (role-filtered list with writable flag), POST (admin+), PATCH (rename/move, admin+), DELETE (admin+), POST /{id}/resync (admin+, folder-origin only). Allowlist via HIPPO_SOURCE_ROOTS.
-               /users (admin): GET list, PUT /{email}/role with anti-lockout guard.
+               /users (admin): GET list, POST (create-user — effective-role tier guard so an admin can't mint a higher-tier login; returns a one-time password in password mode; 409 on duplicate), PUT /{email}/role with anti-lockout guard.
                /tokens: GET/POST (self-service, secret returned once), DELETE /{id} (self or admin); GET ?all=true (admin).
                /settings/status (admin): effective auth_mode/chat_model/embedding_model (cfg.get — DB overlay wins), setup_complete flag, repo bools, counts — no secrets.
                GET /setup/status (public): {setup_complete, auth_modes_available}. POST /setup (token-gated, once): wizard endpoint — sets owner, renames roots, persists operational config, marks setup complete; 409 if already complete; 403 on wrong token; validates secret env vars are present for the chosen mode.
@@ -74,7 +77,7 @@ storage.py     Storage(con, embedder): ALL SQL lives here. upsert/delete/get/lis
                search_hybrid (FTS5 BM25 + vec KNN merged via RRF, k=60), grep (raises ValueError on bad regex/timeout/pattern-too-long).
                backup(path) via VACUUM INTO for consistent snapshots.
                Folder CRUD: get_folder, list_folders(role), create_folder(parent_id, name, origin, location), rename_folder, move_folder (rewrites whole subtree tier), delete_folder (cascades), folder_path (slash-joined ancestor path), folder_by_location.
-               Users/roles (ensure_user, set_role, list_users), surrogate-keyed tokens (create_token, resolve_token,
+               Users/roles (ensure_user, set_role, list_users); profile/create (get_profile(email)->dict|None, set_name(email, name), create_user(email, *, role, password_hash=None)->bool — atomic insert-only, False if the email already exists); surrogate-keyed tokens (create_token, resolve_token,
                list_tokens(email), revoke_token(id,email), list_all_tokens() admin view, revoke_token_any(id) admin revoke).
                Local credentials + lockout: set_password(email, hash, *, role), get_credentials(email)->dict|None (user_id/email/role/password_hash/failed_logins/locked_until),
                get_user_by_id(id)->(email,role)|None, record_failed_login(email) (increments counter; sets locked_until after LOCKOUT_MAX_FAILURES=5),
@@ -87,17 +90,17 @@ storage.py     Storage(con, embedder): ALL SQL lives here. upsert/delete/get/lis
 ```
 
 `ui/` — Vite + React 19 + `@ai-sdk/react` v2 `useChat` + `DefaultChatTransport({api:"/chat"})`.
-Vite dev-server proxies /chat,/ingest,/documents,/folders,/users,/tokens,/settings to :8000. Tool parts render as progress lines.
-`Settings.tsx` — gear-toggle Settings view; role-gated tabs (admin: Folders/Users/Tokens/Status; others: Tokens only). Folders tab shows the full tree with Rename/Re-sync/Delete actions.
+Vite dev-server proxies /chat,/ingest,/documents,/folders,/users,/tokens,/settings,/config,/setup,/me,/auth to :8000. Tool parts render as progress lines.
+`Settings.tsx` — gear-toggle Settings view; role-gated tabs via tabsForRole(role): user → My Profile only; admin → Folders/Users/My Profile/Status; owner adds System config. Tokens + self-service password change live inside the My Profile tab. Folders tab shows the full tree with Rename/Re-sync/Delete actions.
 `App.tsx` — "Add doc" button opens a modal with file picker + multi-destination folder checkboxes (writableFolders from folders.ts); posts folder_ids to /ingest.
-`folders.ts` — pure helpers: Folder type, flattenTree, writableFolders (filters to manual+writable), uploadReducer. Vitest-covered (15 tests across folders.test.ts + citations.test.ts).
+`folders.ts` — pure helpers: Folder type, flattenTree, writableFolders (filters to manual+writable), uploadReducer. Vitest-covered across the folders/setup/citations/auth/settings suites.
 Token secret shown once after POST; list views show metadata only.
 
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (285 tests, <7s, ZERO network — must stay that way)
-cd ui && npm test                  # 19 vitest (folders + citations + auth suites)
+uv run pytest                      # full suite (<7s, ZERO network — must stay that way)
+cd ui && npm test                  # vitest (folders + setup + citations + auth + settings suites)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all synced folders
 uv run hippo serve                 # API :8000
 cd ui && npm run dev               # chat UI :5173
@@ -172,14 +175,14 @@ fixed one real access-control issue in review.
   prereqs); live `chat_model` per `/chat` via `_live_agent()`; other operational keys resolved at
   construction from the overlay (change → restart); SessionMiddleware once if `secret_key`;
   `/settings/status` reports effective overlay values + `setup_complete`; React first-run wizard
-  (`setup.ts` pure logic, Vitest) + owner-only Instance Settings tab. Review fix: `allowed_domain`
+  (`setup.ts` pure logic, Vitest) + owner-only System config tab. Review fix: `allowed_domain`
   override now gates role resolution live; oidc/iap switch/setup prereqs enforced; oidc exchange uses
   effective client_id/public_url.
   **Caveat (by design):** `none` mode is open pre-setup (dev-only, emits a non-localhost startup
   warning) — a secure first-run uses `oidc`/`iap` env (IdP-gated even pre-setup) or keeps the box
   private until the wizard sets `password` mode.
 
-**285 pytest + 23 vitest, eval 4/4 on seed fixtures, UI builds clean.**
+**Full pytest + vitest suite green, eval 4/4 on seed fixtures, UI builds clean.**
 
 **Active plan:** `docs/superpowers/plans/2026-06-13-sp3-setup-wizard.md` — SP3 complete. Next: scale (Postgres+pgvector), MCP client/connectors, deploy.
 
