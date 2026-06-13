@@ -20,6 +20,8 @@ dependencies = [
     "regex>=2024.0.0",
     "mammoth>=1.6.0",
     "mcp>=1.27.0",
+    "slack-bolt>=1.18",
+    "aiohttp>=3.9",
 ]
 
 [project.scripts]
