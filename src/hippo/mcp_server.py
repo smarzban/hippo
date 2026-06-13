@@ -41,8 +41,11 @@ def mcp_read_document(store: Storage, role: str, doc_id: int) -> dict:
 
 
 def mcp_list_documents(store: Storage, role: str, query: str | None = None) -> list[dict]:
+    # path/title stay raw (citation identifiers); the free-text summary is
+    # document-derived, so frame it as untrusted data like search/read/grep.
     return [
-        {"doc_id": d.id, "path": d.path, "title": d.title, "summary": d.summary or ""}
+        {"doc_id": d.id, "path": d.path, "title": d.title,
+         "summary": as_untrusted_data(d.summary) if d.summary else ""}
         for d in store.list_documents(query=query, role=role)
     ]
 
