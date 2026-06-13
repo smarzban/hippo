@@ -81,27 +81,46 @@ class Storage:
     # -- documents ---------------------------------------------------------
 
     def _ensure_embedding_model(self) -> None:
-        """Record the embedding model on first write; refuse to mix embedding
-        spaces. A same-dimension model swap followed by `sync` (not `reindex`)
-        would otherwise silently blend two incompatible vector spaces — a
-        different dimension already fails loudly in sqlite-vec, the same dim does
-        not. The stamp is global (one row), not per-vector; `reindex` re-stamps it."""
-        with self._lock:
-            row = self.con.execute(
-                "SELECT value FROM meta WHERE key='embedding_model'"
-            ).fetchone()
-            if row is None:
-                with self.con:
-                    self.con.execute(
-                        "INSERT INTO meta(key, value) VALUES ('embedding_model', ?) "
-                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                        (self.embedder.model,),
-                    )
-            elif row[0] != self.embedder.model:
+        """Record the embedding model AND dimension on first write; refuse to mix
+        embedding spaces. A same-dimension model swap followed by `sync` (not
+        `reindex`) would silently blend two incompatible vector spaces; a pure
+        dimension change is kept silently by chunk_vec's `IF NOT EXISTS` on reopen
+        and otherwise surfaces only as a raw sqlite-vec "Dimension mismatch" error
+        on the next insert, with no pointer to the fix. Stamping + validating the
+        dim turns that into a clear reindex instruction. The stamp is global (two
+        meta rows); `reindex` re-stamps both."""
+        with self._lock, self.con:
+            meta = dict(self.con.execute(
+                "SELECT key, value FROM meta WHERE key IN ('embedding_model', 'embedding_dim')"
+            ).fetchall())
+            model_row, dim_row = meta.get("embedding_model"), meta.get("embedding_dim")
+            if model_row is None:
+                self.con.execute(
+                    "INSERT INTO meta(key, value) VALUES ('embedding_model', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (self.embedder.model,))
+                self.con.execute(
+                    "INSERT INTO meta(key, value) VALUES ('embedding_dim', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (str(self.embedder.dim),))
+                return
+            if model_row != self.embedder.model:
                 raise ValueError(
-                    f"database was indexed with embedding model {row[0]!r} but the "
+                    f"database was indexed with embedding model {model_row!r} but the "
                     f"configured model is {self.embedder.model!r}; run `hippo reindex` "
-                    f"to re-embed, or set HIPPO_EMBEDDING_MODEL={row[0]}"
+                    f"to re-embed, or set HIPPO_EMBEDDING_MODEL={model_row}"
+                )
+            if dim_row is None:
+                # legacy DB stamped before dim tracking — backfill from the current
+                # embedder (it matches the live chunk_vec, or the next insert fails loudly).
+                self.con.execute(
+                    "INSERT INTO meta(key, value) VALUES ('embedding_dim', ?)",
+                    (str(self.embedder.dim),))
+            elif int(dim_row) != self.embedder.dim:
+                raise ValueError(
+                    f"database was indexed at embedding dimension {dim_row} but the "
+                    f"configured dimension is {self.embedder.dim}; run `hippo reindex` "
+                    f"to rebuild the vector index, or set HIPPO_EMBEDDING_DIM={dim_row}"
                 )
 
     def upsert_document(
@@ -741,6 +760,11 @@ class Storage:
                 "INSERT INTO meta(key, value) VALUES ('embedding_model', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (self.embedder.model,),
+            )
+            self.con.execute(
+                "INSERT INTO meta(key, value) VALUES ('embedding_dim', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(embedding_dim),),
             )
         return len(rows)
 

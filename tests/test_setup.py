@@ -101,17 +101,17 @@ def test_config_get_put_owner_only_and_secrets_protected(tmp_path):
     assert c.put("/config", json={"nonsense": "x"}).status_code == 400
 
 
-def test_embedding_change_guarded_after_documents_exist(tmp_path):
-    app = build_app(_settings(tmp_path))
+def test_embedding_config_must_match_running_embedder(tmp_path):
+    """MED-07: embedding_model/dim are fixed by the env-built embedder + chunk_vec,
+    so PUT /config refuses a value that DISAGREES (config can never silently claim a
+    model/dim the index doesn't use); a value matching the running embedder is a
+    harmless no-op. Holds regardless of whether documents exist."""
+    app = build_app(_settings(tmp_path))   # fake embedder, dim=32
     c = TestClient(app)
-    # empty index: allowed
-    assert c.put("/config", json={"embedding_dim": 64}).status_code == 200
-    # add a document, then changing embedding_dim is refused with the reindex note
-    from hippo.chunking import Chunk
-    fid = next(f.id for f in app.state.store.list_folders(role="owner") if f.parent_id is None)
-    app.state.store.upsert_document(source_type="upload", path="x.md", title="x",
-        content="hi", content_hash="h", chunks=[Chunk(position=0, heading_path="", text="hi")],
-        embed_inputs=["hi"], folder_id=fid)
+    # a value matching the running embedder is accepted (overlay == reality)
+    assert c.put("/config", json={"embedding_dim": 32}).status_code == 200
+    assert c.put("/config", json={"embedding_model": "fake"}).status_code == 200
+    # a mismatching value is refused with a reindex/env pointer
     r = c.put("/config", json={"embedding_dim": 128})
     assert r.status_code == 409 and "reindex" in r.json()["detail"].lower()
     r2 = c.put("/config", json={"embedding_model": "other"})

@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     chat_model: str = "openai:gpt-5.2"
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
+    embed_timeout_s: float = 60.0   # per-request bound on the embedding endpoint (SDK default is 600s)
+    embed_max_retries: int = 2      # embedding client retry budget on transient failures
     enrich_enabled: bool = True
     enrich_model: str = "openai:gpt-5-mini"
     chunk_max_chars: int = 3000  # ~750 tokens
