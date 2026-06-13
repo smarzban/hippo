@@ -397,6 +397,86 @@ class Storage:
         with self._lock:
             return list(self.con.execute("SELECT email, role FROM users ORDER BY email"))
 
+    LOCKOUT_MAX_FAILURES = 5
+    LOCKOUT_MINUTES = 15
+
+    def set_password(self, email: str, password_hash: str, *, role: str | None = None) -> None:
+        """Create-or-update a local credential. Creates the user (with `role` or
+        the default) if absent; on an existing user updates the hash and (only if
+        `role` is given) the role. Clears any lockout state. The caller hashes."""
+        email = _norm_email(email)
+        if role is not None and role not in VALID_ROLES:
+            raise ValueError(f"invalid role {role!r}; expected one of {VALID_ROLES}")
+        with self._lock, self.con:
+            row = self.con.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+            if row is None:
+                self.con.execute(
+                    "INSERT INTO users(email, role, password_hash) VALUES (?,?,?)",
+                    (email, role or DEFAULT_ROLE, password_hash),
+                )
+            elif role is not None:
+                self.con.execute(
+                    "UPDATE users SET password_hash=?, role=?, failed_logins=0, "
+                    "locked_until=NULL WHERE id=?",
+                    (password_hash, role, row[0]),
+                )
+            else:
+                self.con.execute(
+                    "UPDATE users SET password_hash=?, failed_logins=0, "
+                    "locked_until=NULL WHERE id=?",
+                    (password_hash, row[0]),
+                )
+
+    def get_credentials(self, email: str) -> dict | None:
+        """Return {user_id, email, role, password_hash, failed_logins, locked_until}
+        for an email, or None if no such user. Used only by the login path."""
+        email = _norm_email(email)
+        with self._lock:
+            row = self.con.execute(
+                "SELECT id, email, role, password_hash, failed_logins, locked_until "
+                "FROM users WHERE email=?", (email,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"user_id": row[0], "email": row[1], "role": row[2],
+                "password_hash": row[3], "failed_logins": row[4], "locked_until": row[5]}
+
+    def get_user_by_id(self, user_id: int) -> tuple[str, str] | None:
+        """(email, role) for a surrogate id, or None. Used by the session auth path."""
+        with self._lock:
+            row = self.con.execute(
+                "SELECT email, role FROM users WHERE id=?", (user_id,)).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def record_failed_login(self, email: str) -> None:
+        """Increment the failure counter; lock for LOCKOUT_MINUTES once it reaches
+        LOCKOUT_MAX_FAILURES. Lock timestamp is DB-clock based for testability."""
+        email = _norm_email(email)
+        with self._lock, self.con:
+            self.con.execute(
+                "UPDATE users SET failed_logins = failed_logins + 1 WHERE email=?", (email,))
+            self.con.execute(
+                f"UPDATE users SET locked_until = datetime('now', '+{self.LOCKOUT_MINUTES} minutes') "
+                "WHERE email=? AND failed_logins >= ?",
+                (email, self.LOCKOUT_MAX_FAILURES),
+            )
+
+    def reset_login_state(self, email: str) -> None:
+        """Clear the failure counter + lock (called on a successful login)."""
+        email = _norm_email(email)
+        with self._lock, self.con:
+            self.con.execute(
+                "UPDATE users SET failed_logins=0, locked_until=NULL WHERE email=?", (email,))
+
+    def is_locked(self, email: str) -> bool:
+        """True iff the account is currently within its lockout window."""
+        email = _norm_email(email)
+        with self._lock:
+            row = self.con.execute(
+                "SELECT locked_until > datetime('now') FROM users WHERE email=?", (email,)
+            ).fetchone()
+        return bool(row and row[0])
+
     # -- personal access tokens ---------------------------------------------
 
     def create_token_returning_id(self, email: str, name: str = "") -> tuple[int, str]:
