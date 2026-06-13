@@ -1,7 +1,13 @@
 # Knowledge Hub — Design Spec
 
 **Date:** 2026-06-11
-**Status:** Draft for review
+**Status:** Historical (v1 design-time record)
+
+> **SUPERSEDED IN PART (2026-06-13).** This is the original v1 design record. Several v1
+> *non-goals* listed below have since shipped: `.docx` parsing (mammoth), the Slack bot, and
+> real multi-user auth (`password`/`oidc`/`iap` modes, three-tier RBAC). The "personal/local
+> first" deployment posture is now **org-level and role-governed**. Read this for design
+> rationale, but treat `CLAUDE.md` → *State* and `README.md` as the authoritative current shape.
 
 ## 1. Overview
 
