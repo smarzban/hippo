@@ -21,7 +21,7 @@ from starlette.responses import JSONResponse, RedirectResponse
 
 from .agent import HubDeps, build_agent
 from .mcp_server import _mcp_role, build_mcp_server
-from .auth import AuthError, AuthenticatedUser, IapVerifier, check_domain, validate_google_id_token
+from .auth import AuthError, AuthenticatedUser, IapVerifier, check_domain, resolve_role, validate_google_id_token
 from .config import Settings
 from .db import connect
 from .embeddings import build_embedder
@@ -149,12 +149,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     def _email_to_role(email: str) -> str:
         """Canonical domain-check + role resolution. Raises AuthError on domain failure.
         Used by both the HTTP bearer path (_user_for) and the MCP ASGI middleware."""
-        email = email.strip().lower()
-        check_domain(email, settings.allowed_domain)  # raises AuthError
-        role = store.ensure_user(email)
-        if email in settings.admin_email_list:
-            role = "admin"  # env bootstrap always wins (spec §1)
-        return role
+        return resolve_role(store, settings, email)
 
     def _user_for(email: str) -> AuthenticatedUser:
         email = email.strip().lower()

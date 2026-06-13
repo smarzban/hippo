@@ -39,6 +39,9 @@ Spec: `docs/superpowers/specs/2026-06-11-knowledge-hub-design.md` · Decisions: 
 | `HIPPO_MAX_UPLOAD_BYTES` | `10485760` | reject multipart uploads larger than this (413) |
 | `HIPPO_MAX_DOC_CHARS` | `1000000` | skip docs exceeding this char count before embedding (status: `skipped`) |
 | `HIPPO_UI_DIST` | _(unset)_ | path to built UI (`ui/dist`) for FastAPI to serve on one origin; set automatically in the Docker image |
+| `HIPPO_SLACK_ENABLED` | `false` | enable the `hippo slack` bot |
+| `HIPPO_SLACK_BOT_TOKEN` | _(unset)_ | Slack bot token (`xoxb-…`) |
+| `HIPPO_SLACK_APP_TOKEN` | _(unset)_ | Slack app-level token (`xapp-…`, Socket Mode) |
 
 ## Authentication
 
@@ -68,6 +71,7 @@ Hippo supports three auth modes, set via `HIPPO_AUTH_MODE`:
     hippo token list EMAIL          # list a user's tokens (never the secret)
     hippo token revoke EMAIL ID     # revoke a token by id
     hippo mcp                       # MCP server over stdio (local single-user, admin)
+    hippo slack                     # Slack bot over Socket Mode (read-only Q&A)
 
 ## Running with Docker
 
@@ -118,6 +122,29 @@ Example `.claude/mcp.json` entry:
 ```
 
 **Role filtering:** a manager's token sees manager-access docs; a developer's token does not — enforced in Storage, the same as chat. `HIPPO_MCP_ENABLED=false` disables the `/mcp` HTTP mount.
+
+## Slack bot
+
+Ask Hippo questions from Slack — DM the app, or `@Hippo <question>` in a channel.
+Answers are role-filtered: a DM uses your full access; a channel @mention only ever
+surfaces `everyone`-access docs (sensitive content stays in DMs). Follow-ups work —
+DMs are a flowing conversation; in channels, reply in the thread and `@Hippo` again.
+
+It runs in **Socket Mode** (an outbound WebSocket), so it needs no public endpoint and
+works behind IAP. Create a Slack app with Socket Mode enabled, the bot scopes
+`app_mentions:read, chat:write, im:history, im:read, im:write, users:read,
+users:read.email, channels:history, groups:history`, and event subscriptions
+`app_mention` + `message.im`. Then:
+
+```bash
+export HIPPO_SLACK_ENABLED=true
+export HIPPO_SLACK_BOT_TOKEN=xoxb-…     # Bot User OAuth Token
+export HIPPO_SLACK_APP_TOKEN=xapp-…     # App-Level Token (connections:write)
+uv run hippo slack
+```
+
+Run it as its own process/container alongside `hippo serve` (it keeps its own
+connection to the same DB).
 
 ## Tests
 

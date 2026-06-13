@@ -54,3 +54,20 @@ def test_auth_mode_typo_rejected():
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         Settings(_env_file=None, auth_mode="oidcc")
+
+
+def test_slack_settings_defaults_off():
+    s = Settings(_env_file=None)
+    assert s.slack_enabled is False
+    assert s.slack_bot_token == ""
+    assert s.slack_app_token == ""
+
+
+def test_slack_settings_from_env(monkeypatch):
+    monkeypatch.setenv("HIPPO_SLACK_ENABLED", "true")
+    monkeypatch.setenv("HIPPO_SLACK_BOT_TOKEN", "xoxb-abc")
+    monkeypatch.setenv("HIPPO_SLACK_APP_TOKEN", "xapp-xyz")
+    s = Settings(_env_file=None)
+    assert s.slack_enabled is True
+    assert s.slack_bot_token == "xoxb-abc"
+    assert s.slack_app_token == "xapp-xyz"
