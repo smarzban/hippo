@@ -73,6 +73,7 @@ function SetupWizard() {
         <p className="tagline">Set up your instance — this runs once.</p>
 
         <form
+          className="setup-form"
           style={{ width: "100%", maxWidth: 420, textAlign: "left" }}
           onSubmit={(e) => {
             e.preventDefault();
