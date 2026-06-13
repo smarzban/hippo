@@ -28,6 +28,7 @@ from .embeddings import build_embedder
 from .enrich import Enricher
 from .github import GitHubContentsClient, GitHubError
 from .ingest import Ingestor, sync_folder
+from .roles import rank
 from .storage import Storage
 
 
@@ -77,10 +78,16 @@ class _McpBearerAuth:
             _mcp_role.reset(tok)
 
 
-class SourceIn(BaseModel):
-    kind: str = "folder"
-    location: str
-    access: Literal["everyone", "managers"] | None = None
+class FolderIn(BaseModel):
+    parent_id: int
+    name: str
+    origin: Literal["manual", "folder", "repo"] = "manual"
+    location: str | None = None
+
+
+class FolderPatch(BaseModel):
+    name: str | None = None
+    parent_id: int | None = None
 
 
 class RoleIn(BaseModel):
@@ -178,7 +185,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 raise HTTPException(status_code=401, detail="invalid token")
             return _user_for(email)
         if settings.auth_mode == "none":
-            return AuthenticatedUser(email="local", role="admin")
+            return AuthenticatedUser(email="local", role="owner")
         if settings.auth_mode == "iap":
             assertion = request.headers.get("x-goog-iap-jwt-assertion", "")
             if not assertion:
@@ -196,9 +203,25 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         return _user_for(email)
 
     async def require_admin(user: AuthenticatedUser = Depends(verify_request)) -> AuthenticatedUser:
-        if user.role != "admin":
+        if rank(user.role) < 1:  # admin or owner
             raise HTTPException(status_code=403, detail="admin only")
         return user
+
+    async def require_owner(user: AuthenticatedUser = Depends(verify_request)) -> AuthenticatedUser:
+        if rank(user.role) < 2:
+            raise HTTPException(status_code=403, detail="owner only")
+        return user
+
+    def _require_folder_tier(user: AuthenticatedUser, folder) -> None:
+        """A folder may only be managed (renamed/moved/deleted/resynced/created-under)
+        by a caller whose rank is at least the folder's tier — the same rule that
+        gates reading it. require_admin only sets the rank≥1 floor; without this, an
+        admin could move/delete/resync an owner-tier folder (and a move rewrites the
+        whole subtree's tier, leaking owner-only docs down to everyone). Folder ids
+        are guessable, so this must be enforced server-side, not by visibility."""
+        if rank(user.role) < rank(folder.min_role):
+            raise HTTPException(status_code=403,
+                detail="cannot manage a folder above your tier")
 
     if settings.auth_mode == "oidc":
         if not settings.secret_key:
@@ -249,14 +272,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.get("/me")
     async def me(user: AuthenticatedUser = Depends(verify_request)):
-        return {
-            "email": user.email, "role": user.role, "auth_mode": settings.auth_mode,
-            "upload": {
-                "team_repo": bool(settings.github_token and settings.github_docs_repo),
-                "managers_repo": bool(settings.github_token and settings.github_managers_repo)
-                                 and user.role in ("manager", "admin"),
-            },
-        }
+        return {"email": user.email, "role": user.role, "auth_mode": settings.auth_mode}
 
     @app.post("/chat")
     async def chat(request: Request, user: AuthenticatedUser = Depends(verify_request)):
@@ -266,8 +282,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         )
 
     @app.post("/ingest")
-    async def ingest(request: Request, file: UploadFile, repo: str = Form("team"),
+    async def ingest(request: Request, file: UploadFile,
+                     folder_ids: list[int] = Form(...),
                      user: AuthenticatedUser = Depends(verify_request)):
+        from .roles import can_write
         cl = request.headers.get("content-length")
         if cl and cl.isdigit() and int(cl) > settings.max_upload_bytes:
             raise HTTPException(status_code=413, detail="file too large")
@@ -275,38 +293,28 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if len(raw_bytes) > settings.max_upload_bytes:
             raise HTTPException(status_code=413, detail="file too large")
         name = _safe_filename(file.filename or "upload.md")
-        if repo == "managers" and user.role not in ("manager", "admin"):
-            raise HTTPException(status_code=403, detail="managers repo requires the manager role")
-        target = settings.github_managers_repo if repo == "managers" else settings.github_docs_repo
-        if settings.github_token and target:
-            text = raw_bytes.decode("utf-8", errors="replace")
-            if settings.max_doc_chars and len(text) > settings.max_doc_chars:
-                raise HTTPException(status_code=413, detail="document too large")
-            gh = github_factory(target)
-            # Content-hash-qualified path: mirrors ingest.py's L4 fix so two different
-            # docs sharing a filename coexist instead of silently overwriting; an
-            # identical re-upload converges on the same path (idempotent update).
-            digest = hashlib.sha256(raw_bytes).hexdigest()[:8]
-            repo_path = f"uploads/{digest}-{name}"
-            try:
-                sha = await run_in_threadpool(
-                    gh.put_file, repo_path, raw_bytes,
-                    f"hippo upload: {name} (by {user.email})")
-            except GitHubError as e:
-                raise HTTPException(status_code=502, detail=str(e))
-            # The doc is now versioned in git; the next repo sync ingests it (spec §1).
-            return {"status": "committed", "repo": target, "path": repo_path, "commit": sha}
-        if repo == "managers":
-            raise HTTPException(status_code=400, detail="managers repo is not configured")
-        # No GitHub configured (personal mode): direct, unversioned ingestion.
-        # Threadpool: ingestion blocks (embeddings + enrichment), and Enricher's
-        # run_sync cannot run on the event loop thread.
         suffix = Path(name).suffix or ".md"
-        result = await run_in_threadpool(ingestor.ingest_bytes, name, raw_bytes, suffix=suffix)
-        if result.status == "failed":
-            raise HTTPException(status_code=422, detail=result.error)
-        return {"path": result.path, "status": result.status,
-                "chunks": result.chunks, "versioned": False}
+        targets = []
+        for fid in folder_ids:
+            f = store.get_folder(fid)
+            if f is None:
+                raise HTTPException(status_code=404, detail=f"folder {fid} not found")
+            if not can_write(user.role, f.min_role, f.origin):
+                raise HTTPException(status_code=403,
+                    detail=f"cannot upload into {f.name!r} (tier or synced-folder lock)")
+            targets.append(f)
+        results = []
+        for f in targets:
+            prefix = store.folder_path(f.id)
+            res = await run_in_threadpool(
+                ingestor.ingest_bytes, name, raw_bytes,
+                folder_id=f.id, path_prefix=prefix, suffix=suffix)
+            if res.status == "failed":
+                raise HTTPException(status_code=422, detail=res.error)
+            results.append({"path": res.path, "chunks": res.chunks})
+        # one document per destination folder
+        return {"status": "added", "paths": [r["path"] for r in results],
+                "results": results, "versioned": False}
 
     @app.get("/documents")
     async def documents(query: str | None = None, user: AuthenticatedUser = Depends(verify_request)):
@@ -322,80 +330,137 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=404, detail="document not found")
         return {"id": doc.id, "path": doc.path, "title": doc.title, "content": doc.content, "summary": doc.summary}
 
-    @app.get("/sources")
-    async def sources(user: AuthenticatedUser = Depends(verify_request)):
-        return [{"id": i, "kind": k, "location": loc, "access": acc}
-                for i, k, loc, acc in store.list_sources(role=user.role)]
+    @app.get("/folders")
+    async def folders(user: AuthenticatedUser = Depends(verify_request)):
+        from .roles import can_write
+        return [
+            {"id": f.id, "parent_id": f.parent_id, "name": f.name, "tier": f.min_role,
+             "origin": f.origin, "doc_count": f.doc_count,
+             "writable": can_write(user.role, f.min_role, f.origin)}
+            for f in store.list_folders(role=user.role)
+        ]
 
-    @app.post("/sources")
-    async def add_source(body: SourceIn, user: AuthenticatedUser = Depends(require_admin)):
-        folder = Path(body.location).resolve()  # symlink/.. tricks must not escape the roots
-        roots = settings.source_root_list
-        if settings.auth_mode != "none" and not roots:
-            raise HTTPException(status_code=403,
-                detail="source registration is disabled: no HIPPO_SOURCE_ROOTS configured")
-        if roots and not any(folder == r or r in folder.parents for r in roots):
-            raise HTTPException(status_code=403, detail=f"{folder} is outside HIPPO_SOURCE_ROOTS")
-        if not folder.is_dir():
-            raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
-        report = await run_in_threadpool(
-            sync_folder, folder, store, max_chars=settings.chunk_max_chars,
-            overlap_chars=settings.chunk_overlap_chars, enricher=enricher, access=body.access,
-            max_doc_chars=settings.max_doc_chars,
-        )
-        return {"report": {"added": report.added, "updated": report.updated,
-                           "skipped": report.skipped, "removed": report.removed,
-                           "failed": report.failed}}
+    @app.post("/folders")
+    async def create_folder(body: FolderIn, user: AuthenticatedUser = Depends(require_admin)):
+        from .roles import rank as _rank
+        parent = store.get_folder(body.parent_id)
+        if parent is None:
+            raise HTTPException(status_code=404, detail="parent folder not found")
+        if _rank(user.role) < _rank(parent.min_role):
+            raise HTTPException(status_code=403, detail="cannot create a folder above your tier")
+        try:
+            if body.origin == "manual":
+                fid = store.create_folder(parent_id=body.parent_id, name=body.name)
+            else:
+                # mount a synced folder / repo, then sync it
+                if not body.location:
+                    raise HTTPException(status_code=400, detail="location required for synced origin")
+                if body.origin == "folder":
+                    folder = Path(body.location).resolve()
+                    roots = settings.source_root_list
+                    if settings.auth_mode != "none" and not roots:
+                        raise HTTPException(status_code=403,
+                            detail="folder mounts disabled: no HIPPO_SOURCE_ROOTS configured")
+                    if roots and not any(folder == r or r in folder.parents for r in roots):
+                        raise HTTPException(status_code=403,
+                            detail=f"{folder} is outside HIPPO_SOURCE_ROOTS")
+                    if not folder.is_dir():
+                        raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
+                    fid = store.create_folder(parent_id=body.parent_id, name=body.name,
+                                              origin="folder", location=str(folder))
+                    await run_in_threadpool(
+                        sync_folder, folder, store, parent_id=body.parent_id,
+                        max_chars=settings.chunk_max_chars,
+                        overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+                        max_doc_chars=settings.max_doc_chars)
+                else:  # repo
+                    fid = store.create_folder(parent_id=body.parent_id, name=body.name,
+                                              origin="repo", location=body.location)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        f = store.get_folder(fid)
+        return {"id": f.id, "name": f.name, "tier": f.min_role, "origin": f.origin}
 
-    @app.delete("/sources/{source_id}")
-    async def remove_source(source_id: int, user: AuthenticatedUser = Depends(require_admin)):
-        if not store.delete_source(source_id):
-            raise HTTPException(status_code=404, detail="source not found")
-        return {"deleted": source_id}
+    @app.patch("/folders/{folder_id}")
+    async def patch_folder(folder_id: int, body: FolderPatch,
+                           user: AuthenticatedUser = Depends(require_admin)):
+        f = store.get_folder(folder_id)
+        if f is None:
+            raise HTTPException(status_code=404, detail="folder not found")
+        _require_folder_tier(user, f)  # can't rename/move a folder above your tier
+        if body.parent_id is not None:
+            dest = store.get_folder(body.parent_id)
+            if dest is None:
+                raise HTTPException(status_code=404, detail="parent folder not found")
+            _require_folder_tier(user, dest)  # nor move it into one above your tier
+        try:
+            if body.name is not None:
+                store.rename_folder(folder_id, body.name)
+            if body.parent_id is not None:
+                store.move_folder(folder_id, body.parent_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"id": folder_id}
 
-    @app.post("/sources/{source_id}/resync")
-    async def resync_source(source_id: int, user: AuthenticatedUser = Depends(require_admin)):
-        match = next((s for s in store.list_sources(role="admin") if s[0] == source_id), None)
-        if match is None:
-            raise HTTPException(status_code=404, detail="source not found")
-        location = match[2]  # (id, kind, location, access)
-        # Guard a vanished/unmounted path: sync_folder treats an empty folder as
-        # "everything was deleted" and would wipe this source's documents.
-        if not Path(location).is_dir():
+    @app.delete("/folders/{folder_id}")
+    async def delete_folder(folder_id: int, user: AuthenticatedUser = Depends(require_admin)):
+        f = store.get_folder(folder_id)
+        if f is None:
+            raise HTTPException(status_code=404, detail="folder not found")
+        _require_folder_tier(user, f)  # can't delete a folder above your tier
+        try:
+            ok = store.delete_folder(folder_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if not ok:
+            raise HTTPException(status_code=404, detail="folder not found")
+        return {"deleted": folder_id}
+
+    @app.post("/folders/{folder_id}/resync")
+    async def resync_folder(folder_id: int, user: AuthenticatedUser = Depends(require_admin)):
+        f = store.get_folder(folder_id)
+        if f is None:
+            raise HTTPException(status_code=404, detail="folder not found")
+        _require_folder_tier(user, f)  # can't resync (and prune) a folder above your tier
+        if f.origin != "folder" or not f.location:
+            raise HTTPException(status_code=400, detail="only filesystem-synced folders resync")
+        if not Path(f.location).is_dir():
             raise HTTPException(status_code=400,
-                detail=f"source path is not currently a directory: {location}")
+                detail=f"folder path is not currently a directory: {f.location}")
         report = await run_in_threadpool(
-            sync_folder, Path(location), store, max_chars=settings.chunk_max_chars,
+            sync_folder, Path(f.location), store, parent_id=f.parent_id,
+            max_chars=settings.chunk_max_chars,
             overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
-            max_doc_chars=settings.max_doc_chars,
-        )
+            max_doc_chars=settings.max_doc_chars)
         return {"report": {"added": report.added, "updated": report.updated,
                            "skipped": report.skipped, "removed": report.removed,
                            "failed": report.failed}}
 
     @app.get("/users")
     async def list_users(user: AuthenticatedUser = Depends(require_admin)):
-        # Show the EFFECTIVE role: HIPPO_ADMIN_EMAILS always resolve to admin at
+        # Show the EFFECTIVE role: HIPPO_ADMIN_EMAILS always resolve to owner at
         # request time (resolve_role), so reflect that here rather than the (possibly
-        # stale "developer") stored value — otherwise the list misrepresents power.
+        # stale stored value) — otherwise the list misrepresents power.
         admins = settings.admin_email_list
-        return [{"email": e, "role": "admin" if e in admins else r}
+        return [{"email": e, "role": "owner" if e in admins else r}
                 for e, r in store.list_users()]
 
     @app.put("/users/{email}/role")
     async def set_user_role(email: str, body: RoleIn,
                             user: AuthenticatedUser = Depends(require_admin)):
+        from .roles import VALID_ROLES, rank as _rank
         target = email.strip().lower()
-        valid_roles = {"developer", "manager", "admin"}
-        if body.role not in valid_roles:
+        if body.role not in VALID_ROLES:
             raise HTTPException(status_code=400,
-                detail=f"invalid role {body.role!r}; expected one of {sorted(valid_roles)}")
-        if target == user.email and body.role != "admin":
-            raise HTTPException(status_code=400,
-                detail="you can't remove your own admin role")
+                detail=f"invalid role {body.role!r}; expected one of {list(VALID_ROLES)}")
+        if _rank(body.role) > _rank(user.role):
+            raise HTTPException(status_code=403,
+                detail="you cannot grant a role above your own")
+        if target == user.email and _rank(body.role) < _rank(user.role):
+            raise HTTPException(status_code=400, detail="you can't lower your own role")
         # A HIPPO_ADMIN_EMAILS user is force-promoted by resolve_role every request,
         # so demoting them here is a no-op that would make /users lie. Refuse it.
-        if target in settings.admin_email_list and body.role != "admin":
+        if target in settings.admin_email_list and body.role != "owner":
             raise HTTPException(status_code=400,
                 detail="this user is a bootstrap admin (HIPPO_ADMIN_EMAILS); "
                        "remove them from that env var to change their role")
@@ -406,7 +471,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     async def list_tokens_route(all_users: bool = Query(False, alias="all"),
                                 user: AuthenticatedUser = Depends(verify_request)):
         if all_users:
-            if user.role != "admin":
+            if rank(user.role) < 1:  # admin or owner
                 raise HTTPException(status_code=403, detail="admin only")
             return [{"id": i, "email": e, "name": n, "created_at": c, "last_used_at": lu}
                     for i, e, n, c, lu in store.list_all_tokens()]
@@ -422,7 +487,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.delete("/tokens/{token_id}")
     async def delete_token(token_id: int, user: AuthenticatedUser = Depends(verify_request)):
-        ok = (store.revoke_token_any(token_id) if user.role == "admin"
+        ok = (store.revoke_token_any(token_id) if rank(user.role) >= 1
               else store.revoke_token(token_id, user.email))
         if not ok:
             raise HTTPException(status_code=404, detail="token not found")
@@ -441,8 +506,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             "mcp_enabled": settings.mcp_enabled,
             "slack_enabled": settings.slack_enabled,
             "counts": {
-                "documents": len(store.list_documents(role="admin")),
-                "sources": len(store.list_sources(role="admin")),
+                "documents": len(store.list_documents(role="owner")),
+                "folders": len(store.list_folders(role="owner")),
                 "users": len(store.list_users()),
             },
         }
@@ -461,7 +526,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
             index = dist / "index.html"
 
-            RESERVED = ("auth", "chat", "ingest", "documents", "sources", "me",
+            RESERVED = ("auth", "chat", "ingest", "documents", "folders", "me",
                         "users", "tokens", "settings",
                         "health", "openapi.json", "docs", "redoc", "assets", "mcp")
 

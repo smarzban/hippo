@@ -55,7 +55,7 @@ def mcp_grep(store: Storage, role: str, pattern: str) -> list[dict]:
 def build_mcp_server(store: Storage, *, require_auth: bool):
     """Build a FastMCP server exposing the four tools. require_auth=True (HTTP mount)
     means a missing role is a hard error (the middleware must have set it); False
-    (stdio/local) defaults to the single local admin user."""
+    (stdio/local) defaults to the single local owner user."""
     from mcp.server.fastmcp import FastMCP
     from mcp.server.transport_security import TransportSecuritySettings
 
@@ -79,7 +79,7 @@ def build_mcp_server(store: Storage, *, require_auth: bool):
             return r
         if require_auth:
             raise PermissionError("no authenticated role for this MCP request")
-        return "admin"
+        return "owner"
 
     @mcp.tool()
     def search(query: str, top_k: int = 8) -> list[dict]:

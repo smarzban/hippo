@@ -483,3 +483,70 @@ form button {
   cursor: pointer;
 }
 form button:disabled { opacity: 0.45; cursor: default; }
+
+/* ---------- upload modal ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 19, 15, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  animation: fade 0.15s ease;
+}
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 1.5rem 1.75rem;
+  width: min(420px, 92vw);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.modal h3 { margin: 0; font-size: 1rem; }
+.modal p { margin: 0; font-size: 0.85rem; color: var(--muted); }
+.modal input[type="file"] { font-size: 0.85rem; }
+.modal button {
+  align-self: flex-start;
+  background: var(--accent);
+  border: 0;
+  border-radius: 999px;
+  padding: 0.45rem 1rem;
+  color: var(--accent-text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.modal button:disabled { opacity: 0.45; cursor: default; }
+.modal button:not(:disabled):hover { opacity: 0.88; }
+.dest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+}
+.dest-list label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+button.upload-btn {
+  font-size: 0.82rem;
+  padding: 0.42rem 0.85rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  white-space: nowrap;
+}
+button.upload-btn:hover { border-color: var(--accent); color: var(--accent); }

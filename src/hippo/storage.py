@@ -12,6 +12,7 @@ import sqlite_vec
 
 from .chunking import Chunk
 from .embeddings import Embedder
+from .roles import DEFAULT_ROLE, VALID_ROLES, readable_min_roles
 
 
 @dataclass
@@ -36,8 +37,16 @@ class SearchHit:
     score: float
 
 
-VALID_ROLES = ("developer", "manager", "admin")
-MANAGER_ROLES = ("manager", "admin")
+@dataclass
+class Folder:
+    id: int
+    parent_id: int | None
+    name: str
+    min_role: str
+    origin: str          # manual | folder | repo
+    location: str | None
+    doc_count: int
+
 
 GREP_MAX_PATTERN = 200      # reject absurdly long patterns
 GREP_TIMEOUT_S = 2.0        # wall-clock cap per chunk scan (regex module)
@@ -47,9 +56,12 @@ def _norm_email(e: str) -> str:
     return e.strip().lower()
 
 
-def _visible(role: str, access: str | None) -> bool:
-    """Source-level access check. access=None (uploads / no source) = everyone."""
-    return role in MANAGER_ROLES or access != "managers"
+def _role_filter(role: str) -> tuple[str, tuple[str, ...]]:
+    """Return an SQL fragment + params restricting documents to folders the role
+    may read. Joins assume the folders table is aliased `f`."""
+    allowed = readable_min_roles(role)  # raises ValueError on an unknown role
+    placeholders = ",".join("?" * len(allowed))
+    return f"f.min_role IN ({placeholders})", allowed
 
 
 class Storage:
@@ -102,10 +114,11 @@ class Storage:
         content_hash: str,
         chunks: list[Chunk],
         embed_inputs: list[str],
+        folder_id: int,
         summary: str | None = None,
-        source_id: int | None = None,
     ) -> int:
-        """Insert or replace a document and all its chunks atomically."""
+        """Insert or replace a document (and all its chunks) atomically. Every
+        document lives in exactly one folder, which carries its access tier."""
         assert len(chunks) == len(embed_inputs)
         self._ensure_embedding_model()  # fail fast before spending an embed call
         vectors = self.embedder.embed(embed_inputs)  # network: outside the lock
@@ -116,14 +129,14 @@ class Storage:
                 self._delete_chunks(doc_id)
                 self.con.execute(
                     """UPDATE documents SET source_type=?, title=?, content=?, content_hash=?,
-                       summary=?, source_id=?, synced_at=datetime('now') WHERE id=?""",
-                    (source_type, title, content, content_hash, summary, source_id, doc_id),
+                       summary=?, folder_id=?, synced_at=datetime('now') WHERE id=?""",
+                    (source_type, title, content, content_hash, summary, folder_id, doc_id),
                 )
             else:
                 cur = self.con.execute(
-                    """INSERT INTO documents(source_type, path, title, content, content_hash, summary, source_id)
+                    """INSERT INTO documents(source_type, path, title, content, content_hash, summary, folder_id)
                        VALUES (?,?,?,?,?,?,?)""",
-                    (source_type, path, title, content, content_hash, summary, source_id),
+                    (source_type, path, title, content, content_hash, summary, folder_id),
                 )
                 doc_id = cur.lastrowid
             for chunk, vec in zip(chunks, vectors):
@@ -166,80 +179,197 @@ class Storage:
         return bool(row and row[0] == content_hash)
 
     def get_document(self, doc_id: int, *, role: str) -> Document | None:
+        where, params = _role_filter(role)
         with self._lock:
             row = self.con.execute(
-                """SELECT d.id, d.source_type, d.path, d.title, d.content, d.content_hash,
-                          d.summary, s.access
-                   FROM documents d LEFT JOIN sources s ON s.id = d.source_id WHERE d.id=?""",
-                (doc_id,),
+                f"""SELECT d.id, d.source_type, d.path, d.title, d.content, d.content_hash, d.summary
+                    FROM documents d JOIN folders f ON f.id = d.folder_id
+                    WHERE d.id=? AND {where}""",
+                (doc_id, *params),
             ).fetchone()
-        if row is None or not _visible(role, row[7]):
-            return None
-        return Document(*row[:7])
+        return Document(*row) if row else None
 
     def list_documents(self, query: str | None = None, *, role: str) -> list[Document]:
+        where, params = _role_filter(role)
         sql = ("SELECT d.id, d.source_type, d.path, d.title, d.content, d.content_hash, d.summary "
-               "FROM documents d LEFT JOIN sources s ON s.id = d.source_id")
-        where: list[str] = []
-        args: list = []
-        if role not in MANAGER_ROLES:
-            where.append("(s.access IS NULL OR s.access != 'managers')")
+               "FROM documents d JOIN folders f ON f.id = d.folder_id WHERE " + where)
+        args: list = list(params)
         if query:
-            where.append("(d.title LIKE ? OR d.path LIKE ? OR coalesce(d.summary,'') LIKE ?)")
+            sql += " AND (d.title LIKE ? OR d.path LIKE ? OR coalesce(d.summary,'') LIKE ?)"
             like = f"%{query}%"
             args += [like, like, like]
-        if where:
-            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY d.path"
         with self._lock:
             return [Document(*r) for r in self.con.execute(sql, args)]
 
-    def paths_for_source(self, source_id: int) -> set[str]:
+    def paths_for_folder(self, folder_id: int) -> set[str]:
         with self._lock:
-            return {r[0] for r in self.con.execute("SELECT path FROM documents WHERE source_id=?", (source_id,))}
+            return {r[0] for r in self.con.execute(
+                "SELECT path FROM documents WHERE folder_id=?", (folder_id,))}
 
-    # -- sources -----------------------------------------------------------
+    # -- folders -----------------------------------------------------------
 
-    def register_source(self, kind: str, location: str, access: str | None = None) -> int:
-        """Register (or re-register) a source. access=None preserves the existing
-        level — a plain re-sync must never demote a managers source — and defaults
-        new sources to 'everyone'."""
-        if access is not None and access not in ("everyone", "managers"):
-            raise ValueError(f"invalid access {access!r}; expected 'everyone' or 'managers'")
+    def get_folder(self, folder_id: int) -> Folder | None:
+        """Fetch one folder (no role filter — callers gate on the returned
+        min_role/origin). doc_count is the folder's own documents."""
         with self._lock:
-            with self.con:
-                self.con.execute(
-                    "INSERT INTO sources(kind, location, access) VALUES (?,?,COALESCE(?, 'everyone')) "
-                    "ON CONFLICT(location) DO UPDATE SET access=COALESCE(?, sources.access)",
-                    (kind, location, access, access),
+            row = self.con.execute(
+                """SELECT f.id, f.parent_id, f.name, f.min_role, f.origin, f.location,
+                          (SELECT count(*) FROM documents d WHERE d.folder_id = f.id)
+                   FROM folders f WHERE f.id=?""",
+                (folder_id,),
+            ).fetchone()
+        return Folder(*row) if row else None
+
+    def list_folders(self, *, role: str) -> list[Folder]:
+        """Every folder the caller may read, ordered for tree rendering (roots
+        first, then by name). Filtered by rank on the folder's own tier."""
+        allowed = readable_min_roles(role)
+        ph = ",".join("?" * len(allowed))
+        with self._lock:
+            rows = self.con.execute(
+                f"""SELECT f.id, f.parent_id, f.name, f.min_role, f.origin, f.location,
+                           (SELECT count(*) FROM documents d WHERE d.folder_id = f.id)
+                    FROM folders f WHERE f.min_role IN ({ph})
+                    ORDER BY (f.parent_id IS NOT NULL), f.parent_id, f.name""",
+                allowed,
+            ).fetchall()
+        return [Folder(*r) for r in rows]
+
+    def create_folder(self, *, parent_id: int, name: str,
+                      origin: str = "manual", location: str | None = None) -> int:
+        """Create a child folder inheriting the parent's tier. parent_id is
+        required (the three roots are seeded, never created here). Raises
+        ValueError on a missing parent or a duplicate sibling name."""
+        name = name.strip()
+        if not name:
+            raise ValueError("folder name cannot be empty")
+        with self._lock, self.con:
+            prow = self.con.execute(
+                "SELECT min_role FROM folders WHERE id=?", (parent_id,)).fetchone()
+            if prow is None:
+                raise ValueError(f"no folder with id {parent_id}")
+            try:
+                cur = self.con.execute(
+                    "INSERT INTO folders(parent_id, name, min_role, origin, location) "
+                    "VALUES (?,?,?,?,?)",
+                    (parent_id, name, prow[0], origin, location),
                 )
-            return self.con.execute(
-                "SELECT id FROM sources WHERE location=?", (location,)
-            ).fetchone()[0]
+            except sqlite3.IntegrityError as e:
+                # Either the (parent_id, name) sibling-uniqueness or the non-null
+                # location-uniqueness index fired.
+                if location is not None and self.con.execute(
+                    "SELECT 1 FROM folders WHERE location=?", (location,)).fetchone():
+                    raise ValueError(f"location {location!r} is already mounted") from e
+                raise ValueError(f"a folder named {name!r} already exists here") from e
+            return cur.lastrowid
 
-    def list_sources(self, *, role: str) -> list[tuple[int, str, str, str]]:
-        sql = "SELECT id, kind, location, access FROM sources"
-        if role not in MANAGER_ROLES:
-            sql += " WHERE access != 'managers'"
-        sql += " ORDER BY id"
+    def folder_by_location(self, location: str) -> int | None:
         with self._lock:
-            return list(self.con.execute(sql))
+            row = self.con.execute(
+                "SELECT id FROM folders WHERE location=?", (location,)).fetchone()
+        return row[0] if row else None
 
-    def delete_source(self, source_id: int) -> bool:
-        """Remove a source and every document (and chunk/vector) ingested from it."""
+    def folder_path(self, folder_id: int) -> str:
+        """The slash-joined ancestor path, e.g. 'Default/Retail'. Used to
+        folder-qualify upload document paths so the same filename in two folders
+        stays unique and the citation reads meaningfully."""
         with self._lock:
-            if not self.con.execute("SELECT 1 FROM sources WHERE id=?", (source_id,)).fetchone():
+            parts: list[str] = []
+            cur_id: int | None = folder_id
+            while cur_id is not None:
+                row = self.con.execute(
+                    "SELECT parent_id, name FROM folders WHERE id=?", (cur_id,)).fetchone()
+                if row is None:
+                    break
+                parts.append(row[1])
+                cur_id = row[0]
+        return "/".join(reversed(parts))
+
+    def rename_folder(self, folder_id: int, new_name: str) -> None:
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("folder name cannot be empty")
+        with self._lock, self.con:
+            try:
+                cur = self.con.execute(
+                    "UPDATE folders SET name=? WHERE id=?", (new_name, folder_id))
+            except sqlite3.IntegrityError as e:
+                raise ValueError(f"a folder named {new_name!r} already exists here") from e
+            if cur.rowcount == 0:
+                raise ValueError(f"no folder with id {folder_id}")
+
+    def _subtree_ids(self, folder_id: int) -> list[int]:
+        """folder_id plus all descendants (recursive). Caller holds the lock."""
+        rows = self.con.execute(
+            """WITH RECURSIVE sub(id) AS (
+                   SELECT ? UNION ALL
+                   SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id)
+               SELECT id FROM sub""",
+            (folder_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def move_folder(self, folder_id: int, new_parent_id: int) -> None:
+        """Reparent a folder; rewrites the whole moved subtree's tier to the new
+        parent's tier (no per-subfolder overrides in SP1). Refuses moving a root,
+        moving under itself/a descendant (cycle), or a duplicate sibling name."""
+        with self._lock, self.con:
+            row = self.con.execute(
+                "SELECT parent_id FROM folders WHERE id=?", (folder_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"no folder with id {folder_id}")
+            if row[0] is None:
+                raise ValueError("cannot move a root folder")
+            prow = self.con.execute(
+                "SELECT min_role FROM folders WHERE id=?", (new_parent_id,)).fetchone()
+            if prow is None:
+                raise ValueError(f"no folder with id {new_parent_id}")
+            subtree = self._subtree_ids(folder_id)
+            if new_parent_id in subtree:
+                raise ValueError("cannot move a folder under itself")
+            try:
+                self.con.execute(
+                    "UPDATE folders SET parent_id=? WHERE id=?", (new_parent_id, folder_id))
+            except sqlite3.IntegrityError as e:
+                raise ValueError("a folder with that name already exists in the target") from e
+            ph = ",".join("?" * len(subtree))
+            self.con.execute(
+                f"UPDATE folders SET min_role=? WHERE id IN ({ph})", (prow[0], *subtree))
+
+    def delete_folder(self, folder_id: int) -> bool:
+        """Delete a folder, its descendants, and all their documents/chunks/vectors.
+        Roots cannot be deleted. Returns False if the folder does not exist."""
+        with self._lock:
+            row = self.con.execute(
+                "SELECT parent_id FROM folders WHERE id=?", (folder_id,)).fetchone()
+            if row is None:
                 return False
+            if row[0] is None:
+                raise ValueError("cannot delete a root folder")
+            subtree = self._subtree_ids(folder_id)
+            ph = ",".join("?" * len(subtree))
             doc_ids = [r[0] for r in self.con.execute(
-                "SELECT id FROM documents WHERE source_id=?", (source_id,))]
+                f"SELECT id FROM documents WHERE folder_id IN ({ph})", subtree)]
             with self.con:
                 for did in doc_ids:
                     self._delete_chunks(did)
-                self.con.execute("DELETE FROM documents WHERE source_id=?", (source_id,))
-                self.con.execute("DELETE FROM sources WHERE id=?", (source_id,))
+                # ON DELETE CASCADE removes descendant folders + their documents,
+                # but chunk_vec (vec0) is not FK-managed, so chunks were cleared above.
+                self.con.execute("DELETE FROM folders WHERE id=?", (folder_id,))
             return True
 
     # -- users / roles -------------------------------------------------------
+
+    def _user_id_for(self, email: str) -> int:
+        """Resolve email → user_id, creating the user (DEFAULT_ROLE) on first sight.
+        Caller holds the lock."""
+        email = _norm_email(email)
+        row = self.con.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+        if row:
+            return row[0]
+        cur = self.con.execute("INSERT INTO users(email) VALUES (?)", (email,))
+        return cur.lastrowid
 
     def ensure_user(self, email: str) -> str:
         """Create on first sight with the default role; return the current role."""
@@ -250,7 +380,7 @@ class Storage:
                 return row[0]
             with self.con:
                 self.con.execute("INSERT INTO users(email) VALUES (?)", (email,))
-            return "developer"
+            return DEFAULT_ROLE
 
     def set_role(self, email: str, role: str) -> None:
         email = _norm_email(email)
@@ -270,29 +400,28 @@ class Storage:
     # -- personal access tokens ---------------------------------------------
 
     def create_token_returning_id(self, email: str, name: str = "") -> tuple[int, str]:
-        """Mint a bearer token; return (id, plaintext). Only the sha256 is stored.
-        The id is the insert's lastrowid (same statement), so a concurrent create
-        for the same user can't pair this secret with another row's id."""
-        email = _norm_email(email)
+        """Mint a bearer token tied to a user_id; return (id, plaintext). Only the
+        sha256 is stored. The id is the insert's lastrowid (same statement)."""
         token = "hk_" + secrets.token_urlsafe(32)
-        self.ensure_user(email)  # outside the lock — ensure_user takes it itself
         digest = hashlib.sha256(token.encode()).hexdigest()
         with self._lock, self.con:
+            uid = self._user_id_for(email)
             cur = self.con.execute(
-                "INSERT INTO tokens(token_hash, email, name) VALUES (?,?,?)",
-                (digest, email, name),
+                "INSERT INTO tokens(token_hash, user_id, name) VALUES (?,?,?)",
+                (digest, uid, name),
             )
         return cur.lastrowid, token
 
     def create_token(self, email: str, name: str = "") -> str:
-        """Mint a bearer token for MCP/CLI clients. Only its sha256 is stored."""
         return self.create_token_returning_id(email, name)[1]
 
     def resolve_token(self, token: str) -> str | None:
+        """Return the owning user's email for a valid token, else None."""
         digest = hashlib.sha256(token.encode()).hexdigest()
         with self._lock:
             row = self.con.execute(
-                "SELECT email FROM tokens WHERE token_hash=?", (digest,)
+                "SELECT u.email FROM tokens t JOIN users u ON u.id = t.user_id "
+                "WHERE t.token_hash=?", (digest,)
             ).fetchone()
             if row:
                 with self.con:
@@ -303,35 +432,34 @@ class Storage:
         return row[0] if row else None
 
     def list_tokens(self, email: str) -> list[tuple[int, str, str, str | None]]:
-        """Return (id, name, created_at, last_used_at) for all tokens belonging to email."""
+        """(id, name, created_at, last_used_at) for all tokens belonging to email."""
         email = _norm_email(email)
         with self._lock:
             return list(self.con.execute(
-                "SELECT id, name, created_at, last_used_at FROM tokens WHERE email=? ORDER BY id",
+                "SELECT t.id, t.name, t.created_at, t.last_used_at FROM tokens t "
+                "JOIN users u ON u.id = t.user_id WHERE u.email=? ORDER BY t.id",
                 (email,),
             ))
 
     def revoke_token(self, token_id: int, email: str) -> bool:
-        """Delete the token matching both id and email. Returns True if a row was deleted."""
+        """Delete the token matching both id and owner-email."""
         email = _norm_email(email)
         with self._lock, self.con:
             cur = self.con.execute(
-                "DELETE FROM tokens WHERE id=? AND email=?", (token_id, email)
+                "DELETE FROM tokens WHERE id=? AND user_id=(SELECT id FROM users WHERE email=?)",
+                (token_id, email),
             )
         return cur.rowcount > 0
 
     def list_all_tokens(self) -> list[tuple[int, str, str, str, str | None]]:
-        """All users' tokens (admin view): (id, email, name, created_at, last_used_at).
-        Never returns the token secret — only the stored hash exists."""
+        """All users' tokens (admin view): (id, email, name, created_at, last_used_at)."""
         with self._lock:
             return list(self.con.execute(
-                "SELECT id, email, name, created_at, last_used_at "
-                "FROM tokens ORDER BY email, id"
+                "SELECT t.id, u.email, t.name, t.created_at, t.last_used_at "
+                "FROM tokens t JOIN users u ON u.id = t.user_id ORDER BY u.email, t.id"
             ))
 
     def revoke_token_any(self, token_id: int) -> bool:
-        """Delete a token by id without the owner-email scope (admin revoke).
-        Returns True if a row was deleted."""
         with self._lock, self.con:
             cur = self.con.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
         return cur.rowcount > 0
@@ -363,20 +491,18 @@ class Storage:
         return hits
 
     def _search_fts(self, query: str, limit: int, role: str) -> list[int]:
-        # quote each token so user punctuation can't break FTS query syntax
         tokens = [t for t in re.findall(r"\w+", query) if t]
         if not tokens:
             return []
         match = " OR ".join(f'"{t}"' for t in tokens)
-        sql = """SELECT chunks_fts.rowid FROM chunks_fts
-                 JOIN chunks c ON c.id = chunks_fts.rowid
-                 JOIN documents d ON d.id = c.document_id
-                 LEFT JOIN sources s ON s.id = d.source_id
-                 WHERE chunks_fts MATCH ?"""
-        if role not in MANAGER_ROLES:
-            sql += " AND (s.access IS NULL OR s.access != 'managers')"
-        sql += " ORDER BY bm25(chunks_fts) LIMIT ?"
-        rows = self.con.execute(sql, (match, limit))
+        where, params = _role_filter(role)
+        sql = f"""SELECT chunks_fts.rowid FROM chunks_fts
+                  JOIN chunks c ON c.id = chunks_fts.rowid
+                  JOIN documents d ON d.id = c.document_id
+                  JOIN folders f ON f.id = d.folder_id
+                  WHERE chunks_fts MATCH ? AND {where}
+                  ORDER BY bm25(chunks_fts) LIMIT ?"""
+        rows = self.con.execute(sql, (match, *params, limit))
         return [r[0] for r in rows]
 
     def _search_vec(self, vec: list[float], limit: int, role: str) -> list[int]:
@@ -389,41 +515,34 @@ class Storage:
                 (serialized, k),
             )]
             visible = self._visible_ids(rows, role)
-            # done when we have enough, the KNN returned fewer than asked (index
-            # exhausted), or we've already asked for every chunk
             if len(visible) >= limit or len(rows) < k or k >= total:
                 return visible[:limit]
             k = min(k * 4, total)
 
     def _visible_ids(self, chunk_ids: list[int], role: str) -> list[int]:
-        """Filter chunk ids to those the role may see, preserving order. Also
-        drops orphan vec rowids (no chunks row) via the join."""
+        """Filter chunk ids to those the role may see, preserving order. Also drops
+        orphan vec rowids (no chunks row) via the join."""
         if not chunk_ids:
             return []
+        where, params = _role_filter(role)
         ph = ",".join("?" * len(chunk_ids))
         sql = f"""SELECT c.id FROM chunks c
                   JOIN documents d ON d.id = c.document_id
-                  LEFT JOIN sources s ON s.id = d.source_id
-                  WHERE c.id IN ({ph})"""
-        if role not in MANAGER_ROLES:
-            sql += " AND (s.access IS NULL OR s.access != 'managers')"
-        vis = {r[0] for r in self.con.execute(sql, chunk_ids)}
+                  JOIN folders f ON f.id = d.folder_id
+                  WHERE c.id IN ({ph}) AND {where}"""
+        vis = {r[0] for r in self.con.execute(sql, (*chunk_ids, *params))}
         return [cid for cid in chunk_ids if cid in vis]
 
     def _hit(self, chunk_id: int, score: float, role: str) -> SearchHit | None:
+        where, params = _role_filter(role)
         row = self.con.execute(
-            """SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text, s.access
-               FROM chunks c JOIN documents d ON d.id = c.document_id
-               LEFT JOIN sources s ON s.id = d.source_id WHERE c.id=?""",
-            (chunk_id,),
+            f"""SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text
+                FROM chunks c JOIN documents d ON d.id = c.document_id
+                JOIN folders f ON f.id = d.folder_id
+                WHERE c.id=? AND {where}""",
+            (chunk_id, *params),
         ).fetchone()
-        # An orphan chunk_vec rowid (no matching chunk) yields None: skip it rather
-        # than crash on SearchHit(*None). FK CASCADE keeps chunks/FTS in sync but
-        # not the vec0 table, so deletion stays centralized in _delete_chunks.
-        # Rows invisible to the caller's role are also filtered here.
-        if row is None or not _visible(role, row[6]):
-            return None
-        return SearchHit(*row[:6], score=score)
+        return SearchHit(*row, score=score) if row else None
 
     def reindex(self, embedding_dim: int, *, batch: int = 64) -> int:
         """Re-embed every chunk with the current embedder and rebuild chunk_vec.
@@ -461,32 +580,24 @@ class Storage:
         return len(rows)
 
     def grep(self, pattern: str, limit: int = 20, *, role: str) -> list[SearchHit]:
-        """Exact/regex scan over raw chunk text. Complements the indexes for
-        identifiers and codenames. Corpus is small; a full scan is fine.
-
-        Invalid regex (the agent may construct one) raises ValueError so the
-        caller/tool layer can surface a correctable message.
-        Patterns exceeding GREP_MAX_PATTERN chars or those whose scan exceeds
-        GREP_TIMEOUT_S wall-clock seconds also raise ValueError."""
+        """Exact/regex scan over raw chunk text, role-filtered by folder tier."""
         if len(pattern) > GREP_MAX_PATTERN:
             raise ValueError(f"pattern too long (max {GREP_MAX_PATTERN} chars)")
         try:
             rx = regex.compile(pattern, regex.IGNORECASE)
         except regex.error as e:
             raise ValueError(f"invalid regex pattern {pattern!r}: {e}") from e
-        # Materialize rows under the lock, then run the (potentially slow) regex
-        # outside it so a scan never holds the connection against other threads.
+        where, params = _role_filter(role)
         with self._lock:
             rows = self.con.execute(
-                """SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text, s.access
-                   FROM chunks c JOIN documents d ON d.id = c.document_id
-                   LEFT JOIN sources s ON s.id = d.source_id"""
+                f"""SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text
+                    FROM chunks c JOIN documents d ON d.id = c.document_id
+                    JOIN folders f ON f.id = d.folder_id WHERE {where}""",
+                params,
             ).fetchall()
         hits: list[SearchHit] = []
         deadline = time.monotonic() + GREP_TIMEOUT_S
         for row in rows:
-            if not _visible(role, row[6]):
-                continue
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ValueError(f"pattern took too long (>{GREP_TIMEOUT_S}s)")
@@ -495,7 +606,7 @@ class Storage:
             except TimeoutError as e:
                 raise ValueError(f"pattern took too long (>{GREP_TIMEOUT_S}s)") from e
             if matched:
-                hits.append(SearchHit(*row[:6], score=1.0))
+                hits.append(SearchHit(*row, score=1.0))
                 if len(hits) >= limit:
                     break
         return hits
