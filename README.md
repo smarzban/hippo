@@ -53,7 +53,18 @@ Hippo supports three auth modes, set via `HIPPO_AUTH_MODE`:
 
 **Bearer tokens** are accepted in every mode for headless clients (Slack bot, MCP server, CI scripts). Create a token with `hippo token create <email>`.
 
-**Roles:** users have one of three roles — `developer` (default), `manager`, or `admin`. Set roles with `hippo role set <email> <role>`. Sources can be restricted to `managers` and above via the `access` field on `/sources`. Admins can manage sources and tokens via the API.
+**Roles:** users have one of three roles — `developer` (default), `manager`, or `admin`. Set roles with `hippo role set <email> <role>`. Sources can be restricted to `managers` and above via the `access` field on `/sources`. Admins can manage sources and tokens via the API or the Settings UI.
+
+## Settings UI
+
+Every signed-in user can access the Settings view via the gear (⚙) button in the header. From there:
+
+- **Tokens** (everyone) — create, list, and revoke your own personal access tokens (`hk_…`). The plaintext secret is shown exactly once after creation. Use these tokens for MCP clients, the Slack bot, and CI scripts. Each token carries your own role (no escalation).
+- **Sources** (admin only) — list registered sources, add new ones (must be within `HIPPO_SOURCE_ROOTS`), change their access level, trigger a re-sync, or delete them.
+- **Users & Roles** (admin only) — list all users and change their role. An admin cannot demote their own account (anti-lockout guard).
+- **Status** (admin only) — read-only view of the instance configuration: auth mode, models, repo wiring, MCP/Slack status, and doc/source/user counts. No secrets are exposed.
+
+New API endpoints backing the Settings UI: `GET /users`, `PUT /users/{email}/role`, `GET /tokens`, `POST /tokens`, `DELETE /tokens/{id}`, `POST /sources/{id}/resync`, `GET /settings/status`.
 
 **Upload to repo:** when `HIPPO_GITHUB_TOKEN` and a repo are configured, files uploaded via `/ingest` are committed to the configured GitHub repo via the Contents API (`uploads/` prefix). Without GitHub config, files are ingested directly (unversioned).
 
