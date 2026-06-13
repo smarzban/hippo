@@ -3,6 +3,11 @@
 **Date:** 2026-06-11
 **Companion to:** `2026-06-11-knowledge-hub-design.md` (the design spec — *what* we're building; this document records *why*)
 
+> **SUPERSEDED IN PART (2026-06-13).** Historical v1 record. In particular D1 ("personal first,
+> team-ready") has been overtaken: Hippo is now org-level and role-governed (three-tier RBAC, four
+> auth modes, browser setup wizard). The reasoning here is still useful, but `CLAUDE.md` → *State*
+> and `README.md` are the authoritative current shape.
+
 Each entry: the decision, the options considered, and the reasoning. Format loosely follows ADRs (Architecture Decision Records).
 
 ---
