@@ -1,8 +1,26 @@
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+import pydantic_ai.models
+import pytest
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import ModelResponse as MR, TextPart as TP
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from hippo.slack_bot import HISTORY_TURNS, build_history, format_answer, surface_role
+from hippo.agent import build_agent
+from hippo.config import Settings
+from hippo.db import connect
+from hippo.embeddings import FakeEmbedder
+from hippo.slack_bot import HISTORY_TURNS, build_history, format_answer, surface_role, answer_question
+from hippo.storage import Storage
+
+pydantic_ai.models.ALLOW_MODEL_REQUESTS = False
+
+pytestmark = pytest.mark.anyio
 
 BOT = "UBOT"
+
+
+def _store(tmp_path):
+    con = connect(tmp_path / "h.db", embedding_dim=8)
+    return Storage(con, FakeEmbedder(dim=8))
 
 
 def test_surface_role_dm_keeps_full_role():
@@ -50,3 +68,27 @@ def test_build_history_skips_blank_and_bounds_window():
     assert len(history) == HISTORY_TURNS  # bounded
     # newest retained, oldest dropped
     assert history[-1].parts[0].content == f"q{HISTORY_TURNS + 4}"
+
+
+async def test_answer_question_returns_agent_output(tmp_path):
+    def reply(messages: list[ModelMessage], info: AgentInfo) -> MR:
+        return MR(parts=[TP(content="Here is the answer [docs/x.md > S]")])
+
+    agent = build_agent(FunctionModel(reply))
+    store = _store(tmp_path)
+    out = await answer_question(
+        agent, store, Settings(), question="hi", role="developer", history=[]
+    )
+    assert out == "Here is the answer [docs/x.md > S]"
+
+
+async def test_answer_question_friendly_on_error(tmp_path):
+    def boom(messages, info):
+        raise RuntimeError("model exploded")
+
+    agent = build_agent(FunctionModel(boom))
+    store = _store(tmp_path)
+    out = await answer_question(
+        agent, store, Settings(), question="hi", role="developer", history=[]
+    )
+    assert "error" in out.lower()  # friendly, not a stack trace
