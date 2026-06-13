@@ -78,3 +78,25 @@ def test_tokens_all_view_is_admin_only(tmp_path):
     assert c.get("/tokens?all=true", headers=dev).status_code == 403
     all_rows = c.get("/tokens?all=true", headers=admin).json()
     assert any(t.get("email") == "dev@x.com" for t in all_rows)
+
+
+def test_resync_known_and_unknown(tmp_path):
+    app, store = _app(tmp_path)
+    admin = _bearer(store, "boss@x.com")
+    sid = store.register_source("folder", str(tmp_path), access="everyone")
+    c = TestClient(app)
+    r = c.post(f"/sources/{sid}/resync", headers=admin)
+    assert r.status_code == 200 and "report" in r.json()
+    assert c.post("/sources/99999/resync", headers=admin).status_code == 404
+    assert c.post(f"/sources/{sid}/resync", headers=_bearer(store, "dev@x.com")).status_code == 403
+
+
+def test_status_admin_only_and_no_secrets(tmp_path):
+    app, store = _app(tmp_path, chat_model="openai:gpt-5.2")
+    admin, dev = _bearer(store, "boss@x.com"), _bearer(store, "dev@x.com")
+    c = TestClient(app)
+    assert c.get("/settings/status", headers=dev).status_code == 403
+    st = c.get("/settings/status", headers=admin).json()
+    assert st["auth_mode"] == "iap" and st["chat_model"] == "openai:gpt-5.2"
+    assert set(st["counts"]) == {"documents", "sources", "users"}
+    assert "hk_" not in str(st) and "secret" not in str(st).lower()
