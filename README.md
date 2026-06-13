@@ -69,7 +69,7 @@ Then — `OPENAI_*` vars must be in the process environment, so load `.env` befo
 
 Hippo supports four auth modes, set via `HIPPO_AUTH_MODE`:
 
-- **`none`** (default) — no authentication; every request is treated as a local admin. Suitable for personal use or private networks.
+- **`none`** (default) — no authentication; every request is treated as a local owner. Suitable for personal use or private networks only (`serve` prints a warning if bound beyond localhost). Note: in `none` mode the API is open **including during the first-run window**, so for a network-reachable deployment either start in `oidc`/`iap` (gated by the IdP even before setup) or keep the instance private until the wizard switches it to `password` mode.
 - **`oidc`** — in-app Google sign-in. Users are redirected to `/auth/login`, authenticate with Google, and receive a session cookie. Requires `HIPPO_OIDC_CLIENT_ID`, `HIPPO_OIDC_CLIENT_SECRET`, `HIPPO_SECRET_KEY`, and `HIPPO_PUBLIC_URL`. Optionally restrict to a single Google Workspace domain with `HIPPO_ALLOWED_DOMAIN`.
 - **`iap`** — deployed behind [GCP Identity-Aware Proxy](https://cloud.google.com/iap). Hippo verifies the `x-goog-iap-jwt-assertion` header on every request. Requires `HIPPO_IAP_AUDIENCE`.
 - **`password`** — built-in email + password login. Users sign in with their email and a password that is argon2id-hashed in the database. Accounts are locked for 15 minutes after 5 consecutive failures. Sessions are 7-day signed cookies. Requires `HIPPO_SECRET_KEY`; no `HIPPO_OIDC_*` settings are needed. **There are no default credentials** — the first owner is created via the first-run wizard (see below) or the break-glass CLI.
