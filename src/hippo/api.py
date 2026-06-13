@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 log = logging.getLogger("hippo.auth")
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -359,6 +359,11 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if match is None:
             raise HTTPException(status_code=404, detail="source not found")
         location = match[2]  # (id, kind, location, access)
+        # Guard a vanished/unmounted path: sync_folder treats an empty folder as
+        # "everything was deleted" and would wipe this source's documents.
+        if not Path(location).is_dir():
+            raise HTTPException(status_code=400,
+                detail=f"source path is not currently a directory: {location}")
         report = await run_in_threadpool(
             sync_folder, Path(location), store, max_chars=settings.chunk_max_chars,
             overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
@@ -370,7 +375,12 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.get("/users")
     async def list_users(user: AuthenticatedUser = Depends(require_admin)):
-        return [{"email": e, "role": r} for e, r in store.list_users()]
+        # Show the EFFECTIVE role: HIPPO_ADMIN_EMAILS always resolve to admin at
+        # request time (resolve_role), so reflect that here rather than the (possibly
+        # stale "developer") stored value — otherwise the list misrepresents power.
+        admins = settings.admin_email_list
+        return [{"email": e, "role": "admin" if e in admins else r}
+                for e, r in store.list_users()]
 
     @app.put("/users/{email}/role")
     async def set_user_role(email: str, body: RoleIn,
@@ -383,13 +393,19 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         if target == user.email and body.role != "admin":
             raise HTTPException(status_code=400,
                 detail="you can't remove your own admin role")
+        # A HIPPO_ADMIN_EMAILS user is force-promoted by resolve_role every request,
+        # so demoting them here is a no-op that would make /users lie. Refuse it.
+        if target in settings.admin_email_list and body.role != "admin":
+            raise HTTPException(status_code=400,
+                detail="this user is a bootstrap admin (HIPPO_ADMIN_EMAILS); "
+                       "remove them from that env var to change their role")
         store.set_role(target, body.role)
         return {"email": target, "role": body.role}
 
     @app.get("/tokens")
-    async def list_tokens_route(all: bool = False,
+    async def list_tokens_route(all_users: bool = Query(False, alias="all"),
                                 user: AuthenticatedUser = Depends(verify_request)):
-        if all:
+        if all_users:
             if user.role != "admin":
                 raise HTTPException(status_code=403, detail="admin only")
             return [{"id": i, "email": e, "name": n, "created_at": c, "last_used_at": lu}
@@ -399,9 +415,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.post("/tokens")
     async def create_token_route(body: TokenIn, user: AuthenticatedUser = Depends(verify_request)):
-        secret = store.create_token(user.email, body.name)   # tied to caller -> caller's role
-        tok = store.list_tokens(user.email)[-1]               # newest row for the id
-        return {"id": tok[0], "token": secret}
+        # Atomic id from the insert (not a follow-up query) — tied to the caller,
+        # so the minted token carries the caller's role; no privilege escalation.
+        token_id, secret = store.create_token_returning_id(user.email, body.name)
+        return {"id": token_id, "token": secret}
 
     @app.delete("/tokens/{token_id}")
     async def delete_token(token_id: int, user: AuthenticatedUser = Depends(verify_request)):

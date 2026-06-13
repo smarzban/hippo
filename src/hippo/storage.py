@@ -269,18 +269,24 @@ class Storage:
 
     # -- personal access tokens ---------------------------------------------
 
-    def create_token(self, email: str, name: str = "") -> str:
-        """Mint a bearer token for MCP/CLI clients. Only its sha256 is stored."""
+    def create_token_returning_id(self, email: str, name: str = "") -> tuple[int, str]:
+        """Mint a bearer token; return (id, plaintext). Only the sha256 is stored.
+        The id is the insert's lastrowid (same statement), so a concurrent create
+        for the same user can't pair this secret with another row's id."""
         email = _norm_email(email)
         token = "hk_" + secrets.token_urlsafe(32)
-        self.ensure_user(email)
+        self.ensure_user(email)  # outside the lock — ensure_user takes it itself
         digest = hashlib.sha256(token.encode()).hexdigest()
         with self._lock, self.con:
-            self.con.execute(
+            cur = self.con.execute(
                 "INSERT INTO tokens(token_hash, email, name) VALUES (?,?,?)",
                 (digest, email, name),
             )
-        return token
+        return cur.lastrowid, token
+
+    def create_token(self, email: str, name: str = "") -> str:
+        """Mint a bearer token for MCP/CLI clients. Only its sha256 is stored."""
+        return self.create_token_returning_id(email, name)[1]
 
     def resolve_token(self, token: str) -> str | None:
         digest = hashlib.sha256(token.encode()).hexdigest()
@@ -318,13 +324,10 @@ class Storage:
         """All users' tokens (admin view): (id, email, name, created_at, last_used_at).
         Never returns the token secret — only the stored hash exists."""
         with self._lock:
-            return [
-                (r[0], r[1], r[2], r[3], r[4])
-                for r in self.con.execute(
-                    "SELECT id, email, name, created_at, last_used_at "
-                    "FROM tokens ORDER BY email, id"
-                ).fetchall()
-            ]
+            return list(self.con.execute(
+                "SELECT id, email, name, created_at, last_used_at "
+                "FROM tokens ORDER BY email, id"
+            ))
 
     def revoke_token_any(self, token_id: int) -> bool:
         """Delete a token by id without the owner-email scope (admin revoke).

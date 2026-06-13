@@ -80,6 +80,37 @@ def test_tokens_all_view_is_admin_only(tmp_path):
     assert any(t.get("email") == "dev@x.com" for t in all_rows)
 
 
+def test_developer_can_revoke_own_token(tmp_path):
+    app, store = _app(tmp_path)
+    dev = _bearer(store, "dev@x.com")
+    c = TestClient(app)
+    tid = c.post("/tokens", json={"name": "mine"}, headers=dev).json()["id"]
+    assert c.delete(f"/tokens/{tid}", headers=dev).status_code == 200       # self-service success
+    assert all(t["id"] != tid for t in c.get("/tokens", headers=dev).json())
+
+
+def test_users_shows_effective_role_and_blocks_bootstrap_demotion(tmp_path):
+    app, store = _app(tmp_path, admin_emails="boss@x.com,boss2@x.com")
+    boss2 = _bearer(store, "boss2@x.com")
+    store.ensure_user("boss@x.com")   # stored 'developer', but a bootstrap admin
+    c = TestClient(app)
+    users = {u["email"]: u["role"] for u in c.get("/users", headers=boss2).json()}
+    assert users["boss@x.com"] == "admin"   # EFFECTIVE role shown, not stale 'developer'
+    # another admin can't demote a bootstrap admin (resolve_role re-promotes => no-op/lie)
+    assert c.put("/users/boss@x.com/role", json={"role": "developer"},
+                 headers=boss2).status_code == 400
+
+
+def test_resync_missing_folder_does_not_wipe(tmp_path):
+    app, store = _app(tmp_path)
+    admin = _bearer(store, "boss@x.com")
+    missing = tmp_path / "gone"
+    sid = store.register_source("folder", str(missing), access="everyone")
+    c = TestClient(app)
+    # path isn't a directory -> 400, NOT a sync that would delete the source's docs
+    assert c.post(f"/sources/{sid}/resync", headers=admin).status_code == 400
+
+
 def test_resync_known_and_unknown(tmp_path):
     app, store = _app(tmp_path)
     admin = _bearer(store, "boss@x.com")

@@ -41,6 +41,7 @@ function TokensPanel({ admin }: { admin: boolean }) {
   const [name, setName] = useState("");
   const [secret, setSecret] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [note, setNote] = useState("");
   const load = useCallback(() => {
     getJSON(showAll ? "/tokens?all=true" : "/tokens").then(setRows).catch(() => setRows([]));
   }, [showAll]);
@@ -48,9 +49,14 @@ function TokensPanel({ admin }: { admin: boolean }) {
   const create = async () => {
     const r = await fetch("/tokens", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }) });
-    if (r.ok) { const b = await r.json(); setSecret(b.token); setName(""); load(); }
+    if (r.ok) { const b = await r.json(); setSecret(b.token); setName(""); setNote(""); load(); }
+    else setNote(`couldn't create token (${r.status})`);
   };
-  const revoke = async (id: number) => { await fetch(`/tokens/${id}`, { method: "DELETE" }); load(); };
+  const revoke = async (id: number) => {
+    const r = await fetch(`/tokens/${id}`, { method: "DELETE" });
+    setNote(r.ok ? "" : `couldn't revoke (${r.status})`);
+    load();
+  };
   return (
     <div className="panel">
       <p>Personal access tokens for MCP / Slack / CLI. Each token carries your own role.</p>
@@ -59,6 +65,7 @@ function TokensPanel({ admin }: { admin: boolean }) {
         <button onClick={create}>Create token</button>
         {admin && <label><input type="checkbox" checked={showAll}
           onChange={(e) => setShowAll(e.target.checked)} /> show all users</label>}
+        <span className="note">{note}</span>
       </div>
       {secret && (
         <div className="secret">
@@ -96,7 +103,11 @@ function SourcesPanel() {
   };
   const resync = async (id: number) => { setNote("syncing…");
     const r = await fetch(`/sources/${id}/resync`, { method: "POST" }); setNote(r.ok ? "synced" : `error ${r.status}`); };
-  const del = async (id: number) => { await fetch(`/sources/${id}`, { method: "DELETE" }); load(); };
+  const del = async (id: number) => {
+    const r = await fetch(`/sources/${id}`, { method: "DELETE" });
+    setNote(r.ok ? "deleted" : `error ${r.status}`);
+    load();
+  };
   return (
     <div className="panel">
       <div className="row">
