@@ -17,6 +17,24 @@ export const CITE_RE = /【([^】]+)】|\[([^\][\n]+? > [^\][\n]+?)\]/g;
 // Sentinel wrapped in backticks so it survives as an inline-code node in markdown.
 export const MARKER_RE = /^⟦(\d+)⟧$/; // ⟦N⟧
 
+// The agent appends this exact marker as the very last thing in its reply (and only
+// then) when it cannot answer from the docs — a refusal cites nothing, so the "no
+// sources" warning would otherwise misfire on it. An HTML comment: even if a strip is
+// ever missed, the markdown renderer drops it. Must stay byte-for-byte in sync with the
+// agent system prompt.
+export const NO_SOURCES_MARKER = "<!--hippo:no-sources-->";
+// Only a marker at the very END (the contract) counts as the refusal signal. Matching it
+// anywhere would let a marker emitted mid-answer — or one quoted from a document — suppress
+// the warning and hide a genuinely uncited claim. So we anchor to end-of-string.
+const TRAILING_MARKER_RE = /\s*<!--hippo:no-sources-->\s*$/;
+
+// Returns the text with a trailing marker removed and whether one was present (a refusal).
+// Fails safe: a non-trailing or absent marker => refused=false => warning logic unchanged.
+export function stripNoSourcesMarker(text: string): { text: string; refused: boolean } {
+  if (!TRAILING_MARKER_RE.test(text)) return { text, refused: false };
+  return { text: text.replace(TRAILING_MARKER_RE, ""), refused: true };
+}
+
 export function buildDocIndex(docs: DocMeta[]): DocIndex {
   const idx: DocIndex = new Map();
   const add = (key: string | undefined, d: DocMeta) => {
@@ -81,7 +99,14 @@ export function processCitations(
 ): { processed: string; sources: Source[] } {
   const sources: Source[] = [];
   const keyToNum = new Map<string, number>();
-  const processed = text.replace(CITE_RE, (_m, a: string, b: string) => {
+  // Each citation becomes a backtick-wrapped sentinel (`⟦N⟧`). If a backtick sits
+  // immediately on either side, the runs merge into one CommonMark code span and the
+  // marker is lost (seen as stray backticks). That happens with back-to-back citations
+  // (`⟦1⟧``⟦2⟧`), and equally with a literal inline-code span touching a citation
+  // (`make`[a > b] or [a > b]`make`). Pad the colliding side with a space so each
+  // sentinel survives as its own inline-code node.
+  let prevEnd = -1;
+  const processed = text.replace(CITE_RE, (m: string, a: string, b: string, offset: number) => {
     const inner = (a ?? b ?? "").trim();
     const r = resolveCitation(inner, docIndex);
     const key = `${r.docId ?? r.title}::${r.scrollTarget}`;
@@ -91,7 +116,12 @@ export function processCitations(
       keyToNum.set(key, num);
       sources.push({ num, ...r });
     }
-    return "`⟦" + num + "⟧`";
+    // Lead collides with a preceding marker (offset === prevEnd) or inline-code span;
+    // trail collides with a following inline-code span.
+    const lead = offset === prevEnd || text[offset - 1] === "`" ? " " : "";
+    const trail = text[offset + m.length] === "`" ? " " : "";
+    prevEnd = offset + m.length;
+    return lead + "`⟦" + num + "⟧`" + trail;
   });
   return { processed, sources };
 }

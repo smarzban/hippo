@@ -14,6 +14,8 @@ export default defineConfig({
       "/users": "http://127.0.0.1:8000",
       "/tokens": "http://127.0.0.1:8000",
       "/settings": "http://127.0.0.1:8000",
+      "/me": "http://127.0.0.1:8000",
+      "/auth": "http://127.0.0.1:8000",
     },
   },
 });
