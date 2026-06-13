@@ -11,6 +11,14 @@ if TYPE_CHECKING:
     from .storage import Storage
 
 
+def safe_log(value: str, limit: int = 120) -> str:
+    """Make a caller-controlled string safe to drop into a single log line: replace
+    non-printable characters (newline/control-char log-injection defense) with a
+    space and truncate (bounds line length + PII volume during a denial storm).
+    Used wherever an attacker-controlled email/identifier is logged."""
+    return "".join(c if c.isprintable() else " " for c in (value or ""))[:limit]
+
+
 class AuthError(Exception):
     """Identity could not be established or is not allowed (-> 401/403)."""
 

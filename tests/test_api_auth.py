@@ -290,7 +290,7 @@ def test_ingest_docx_via_api_fallback(tmp_path):
 
 
 def test_resync_missing_folder_does_not_wipe(tmp_path):
-    app, store = _iap_app_with_tokens(tmp_path)[:2]
+    app, store = _iap_app_with_tokens(tmp_path, source_roots=str(tmp_path))[:2]
     admin = {"Authorization": f"Bearer {store.create_token('boss@x.com')}"}
     c = TestClient(app)
     rows = c.get("/folders", headers=admin).json()
@@ -304,7 +304,7 @@ def test_resync_missing_folder_does_not_wipe(tmp_path):
 
 
 def test_resync_known_and_unknown(tmp_path):
-    app, store = _iap_app_with_tokens(tmp_path)[:2]
+    app, store = _iap_app_with_tokens(tmp_path, source_roots=str(tmp_path))[:2]
     admin = {"Authorization": f"Bearer {store.create_token('boss@x.com')}"}
     dev = {"Authorization": f"Bearer {store.create_token('dev@x.com')}"}
     c = TestClient(app)

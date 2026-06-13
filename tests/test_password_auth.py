@@ -53,6 +53,31 @@ def test_wrong_password_is_generic_401(tmp_path):
     assert r2.status_code == 401 and r2.json()["detail"] == r.json()["detail"]
 
 
+def test_failed_login_emits_warning_log(tmp_path, caplog):
+    """MED-14: failed password logins / lockouts emit WARNINGs so an operator can
+    detect brute-force/credential-stuffing — the password surface otherwise has no
+    failed-attempt telemetry (contrast verify_request, which logs bearer/IAP denials)."""
+    import logging
+    c = TestClient(_app_with_owner(tmp_path))
+    with caplog.at_level(logging.WARNING, logger="hippo.auth"):
+        c.post("/auth/login", json={"email": "owner@x.com", "password": "nope"})
+    assert any("bad password" in r.getMessage() and "owner@x.com" in r.getMessage()
+               for r in caplog.records)
+
+    # an unknown user is logged distinctly (the client still gets the generic 401)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hippo.auth"):
+        c.post("/auth/login", json={"email": "ghost@x.com", "password": "x"})
+    assert any("no local credential" in r.getMessage() for r in caplog.records)
+
+    # repeated failures trip a lockout WARNING
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hippo.auth"):
+        for _ in range(6):
+            c.post("/auth/login", json={"email": "owner@x.com", "password": "nope"})
+    assert any("locked" in r.getMessage() for r in caplog.records)
+
+
 def test_lockout_blocks_even_correct_password(tmp_path):
     c = TestClient(_app_with_owner(tmp_path))
     for _ in range(5):

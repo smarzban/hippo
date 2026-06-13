@@ -146,6 +146,29 @@ def test_tokens_cross_user_revoke_blocked_for_user_allowed_for_admin(tmp_path):
     assert c.delete(f"/tokens/{other_id}", headers=admin).status_code == 200
 
 
+def test_admin_cannot_revoke_owner_token(tmp_path):
+    """MED-01: token revocation must honor the effective-role tier guard. A genuine
+    rank-1 admin cannot revoke a token owned by an owner (that would DoS the owner's
+    CLI/MCP automation), mirroring the admin_reset_password guard. Downward revokes
+    and self-revoke still work."""
+    app, store = _app(tmp_path)
+    store.set_role("mgr@x.com", "admin")          # genuine rank-1 admin (not bootstrap owner)
+    owner = _bearer(store, "boss@x.com")          # owner via admin_emails
+    admin = _bearer(store, "mgr@x.com")
+    c = TestClient(app)
+    owner_tok = int(c.post("/tokens", json={"name": "owner-cli"}, headers=owner).json()["id"])
+    # admin (rank 1) cannot revoke the owner's (rank 2) token
+    assert c.delete(f"/tokens/{owner_tok}", headers=admin).status_code == 403
+    # and it was NOT revoked — still listed for the owner
+    assert any(t["id"] == owner_tok for t in c.get("/tokens", headers=owner).json())
+    # owner CAN revoke an admin's token (downward)
+    admin_tok = int(c.post("/tokens", json={"name": "mgr-cli"}, headers=admin).json()["id"])
+    assert c.delete(f"/tokens/{admin_tok}", headers=owner).status_code == 200
+    # and an admin can still self-revoke their own token
+    admin_tok2 = int(c.post("/tokens", json={"name": "mgr-cli2"}, headers=admin).json()["id"])
+    assert c.delete(f"/tokens/{admin_tok2}", headers=admin).status_code == 200
+
+
 def test_tokens_all_view_is_admin_only(tmp_path):
     app, store = _app(tmp_path)
     dev, admin = _bearer(store, "dev@x.com"), _bearer(store, "boss@x.com")
