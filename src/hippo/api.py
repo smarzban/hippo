@@ -99,7 +99,18 @@ class TokenIn(BaseModel):
     name: str = ""
 
 
+class ProfileIn(BaseModel):
+    name: str = ""  # email is read-only; only the display name is self-editable
+
+
+class CreateUserIn(BaseModel):
+    email: str
+    role: str = "user"  # validated in the handler so we return 400, not 422
+    name: str = ""
+
+
 MIN_PASSWORD_LEN = 8
+MAX_NAME_LEN = 100
 
 
 def _usage_limits(settings: Settings) -> UsageLimits:
@@ -452,7 +463,21 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.get("/me")
     async def me(user: AuthenticatedUser = Depends(verify_request)):
-        return {"email": user.email, "role": user.role, "auth_mode": auth_mode}
+        prof = store.get_profile(user.email)
+        return {"email": user.email, "role": user.role, "auth_mode": auth_mode,
+                "name": prof["name"] if prof else ""}
+
+    @app.patch("/me")
+    async def update_me(body: ProfileIn, user: AuthenticatedUser = Depends(verify_request)):
+        # Only the display name is self-editable; email is the login identity and
+        # stays read-only here.
+        name = body.name.strip()
+        if len(name) > MAX_NAME_LEN:
+            raise HTTPException(status_code=400,
+                detail=f"name must be at most {MAX_NAME_LEN} characters")
+        store.set_name(user.email, name)
+        prof = store.get_profile(user.email) or {"email": user.email, "name": name, "role": user.role}
+        return {**prof, "auth_mode": auth_mode}
 
     @app.post("/chat")
     async def chat(request: Request, user: AuthenticatedUser = Depends(verify_request)):
@@ -624,6 +649,35 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         admins = settings.admin_email_list
         return [{"email": e, "role": "owner" if e in admins else r}
                 for e, r in store.list_users()]
+
+    @app.post("/users")
+    async def create_user(body: CreateUserIn, user: AuthenticatedUser = Depends(require_admin)):
+        from .roles import VALID_ROLES
+        target = body.email.strip().lower()
+        if "@" not in target or "." not in target.split("@")[-1]:
+            raise HTTPException(status_code=400, detail="a valid email is required")
+        if body.role not in VALID_ROLES:
+            raise HTTPException(status_code=400,
+                detail=f"invalid role {body.role!r}; expected one of {list(VALID_ROLES)}")
+        if rank(body.role) > rank(user.role):
+            raise HTTPException(status_code=403, detail="cannot create a user above your tier")
+        if len(body.name.strip()) > MAX_NAME_LEN:
+            raise HTTPException(status_code=400,
+                detail=f"name must be at most {MAX_NAME_LEN} characters")
+        if store.get_profile(target) is not None:
+            raise HTTPException(status_code=409, detail="a user with that email already exists")
+        resp: dict = {"email": target, "role": body.role}
+        if auth_mode == "password":
+            # mint a one-time initial password (shown once, like an admin reset)
+            new_pw = secrets.token_urlsafe(12)   # >= MIN_PASSWORD_LEN
+            store.set_password(target, hash_password(new_pw), role=body.role)
+            resp["password"] = new_pw
+        else:
+            # oidc/iap: the user becomes real on first sign-in; just pre-set the role
+            store.set_role(target, body.role)
+        if body.name.strip():
+            store.set_name(target, body.name.strip())
+        return resp
 
     @app.put("/users/{email}/role")
     async def set_user_role(email: str, body: RoleIn,

@@ -191,6 +191,20 @@ def test_set_role_and_validation(store):
         store.set_role("a@x.com", "superuser")
 
 
+def test_name_defaults_empty_and_is_editable(store):
+    store.ensure_user("a@x.com")
+    prof = store.get_profile("a@x.com")
+    assert prof == {"email": "a@x.com", "name": "", "role": "user"}
+    store.set_name("a@x.com", "Alice X")
+    assert store.get_profile("a@x.com")["name"] == "Alice X"
+    # email is normalized on lookup
+    assert store.get_profile("A@X.COM")["name"] == "Alice X"
+
+
+def test_get_profile_unknown_user_is_none(store):
+    assert store.get_profile("nobody@x.com") is None
+
+
 def test_token_roundtrip_and_hashing(store):
     t = store.create_token("a@x.com", name="laptop")
     assert t.startswith("hk_") and len(t) > 30

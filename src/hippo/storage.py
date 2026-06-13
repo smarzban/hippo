@@ -397,6 +397,20 @@ class Storage:
         with self._lock:
             return list(self.con.execute("SELECT email, role FROM users ORDER BY email"))
 
+    def get_profile(self, email: str) -> dict | None:
+        """{email, name, role} for a user, or None. Used by /me and PATCH /me."""
+        email = _norm_email(email)
+        with self._lock:
+            row = self.con.execute(
+                "SELECT email, name, role FROM users WHERE email=?", (email,)).fetchone()
+        return {"email": row[0], "name": row[1], "role": row[2]} if row else None
+
+    def set_name(self, email: str, name: str) -> None:
+        """Update a user's display name. No-op if the user does not exist."""
+        email = _norm_email(email)
+        with self._lock, self.con:
+            self.con.execute("UPDATE users SET name=? WHERE email=?", (name, email))
+
     LOCKOUT_MAX_FAILURES = 5
     LOCKOUT_MINUTES = 15
 
