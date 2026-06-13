@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildDocIndex, MARKER_RE, processCitations } from "./citations";
+import {
+  buildDocIndex,
+  MARKER_RE,
+  NO_SOURCES_MARKER,
+  processCitations,
+  stripNoSourcesMarker,
+} from "./citations";
 
 const DOCS = [
   { id: 1, path: "docs/polly.md", title: "Polly Telegram Integration" },
@@ -64,5 +70,22 @@ describe("processCitations", () => {
     const { sources } = processCitations("[Nonexistent Doc > Section] here.", idx);
     expect(sources).toHaveLength(1);
     expect(sources[0].docId).toBeNull();
+  });
+});
+
+describe("stripNoSourcesMarker", () => {
+  it("detects and removes a trailing refusal marker", () => {
+    const raw = `I couldn't find anything about that.\n${NO_SOURCES_MARKER}`;
+    const { text, refused } = stripNoSourcesMarker(raw);
+    expect(refused).toBe(true);
+    expect(text).toBe("I couldn't find anything about that.");
+    expect(text).not.toContain(NO_SOURCES_MARKER);
+  });
+
+  it("leaves a normal answer untouched and reports refused=false", () => {
+    const raw = "Polly uses a webhook.";
+    const { text, refused } = stripNoSourcesMarker(raw);
+    expect(refused).toBe(false);
+    expect(text).toBe(raw);
   });
 });

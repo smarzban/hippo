@@ -17,6 +17,19 @@ export const CITE_RE = /【([^】]+)】|\[([^\][\n]+? > [^\][\n]+?)\]/g;
 // Sentinel wrapped in backticks so it survives as an inline-code node in markdown.
 export const MARKER_RE = /^⟦(\d+)⟧$/; // ⟦N⟧
 
+// The agent appends this exact marker (and only this) when it cannot answer from the
+// docs — a refusal cites nothing, so the "no sources" warning would otherwise misfire on
+// it. An HTML comment: even if a strip is ever missed, the markdown renderer drops it
+// rather than showing it. Must stay byte-for-byte in sync with the agent system prompt.
+export const NO_SOURCES_MARKER = "<!--hippo:no-sources-->";
+
+// Returns the text with every marker removed and whether one was present (a refusal).
+// Fails safe: no marker => refused=false => the warning logic is unchanged.
+export function stripNoSourcesMarker(text: string): { text: string; refused: boolean } {
+  if (!text.includes(NO_SOURCES_MARKER)) return { text, refused: false };
+  return { text: text.split(NO_SOURCES_MARKER).join("").trim(), refused: true };
+}
+
 export function buildDocIndex(docs: DocMeta[]): DocIndex {
   const idx: DocIndex = new Map();
   const add = (key: string | undefined, d: DocMeta) => {
