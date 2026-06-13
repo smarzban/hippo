@@ -22,11 +22,14 @@ def test_enricher_feeds_embedding_inputs(tmp_path):
     store = Storage(connect(tmp_path / "t.db", embedding_dim=32), FakeEmbedder(dim=32))
     e = Enricher(model=TestModel(custom_output_text="ctxline"))
     ing = Ingestor(store, max_chars=3000, overlap_chars=0, enricher=e)
+    folder_id = store.con.execute(
+        "SELECT id FROM folders WHERE min_role='user' AND parent_id IS NULL"
+    ).fetchone()[0]
     f = tmp_path / "a.md"
     f.write_text("# A\n\nsome body text")
-    res = ing.ingest_file(f, source_type="folder")
+    res = ing.ingest_file(f, source_type="folder", folder_id=folder_id)
     assert res.status == "added"
-    doc = store.list_documents(role="admin")[0]
+    doc = store.list_documents(role="owner")[0]
     assert doc.summary == "ctxline"
 
 

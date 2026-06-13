@@ -17,31 +17,38 @@ from hippo.storage import Storage
 # Shared helpers (mirrored from tests/test_storage.py)
 # ---------------------------------------------------------------------------
 
-def _add_doc(store, path, text, source_id=None, title=None):
+def _add_doc(store, path, text, folder_id=None, title=None):
+    if folder_id is None:
+        folder_id = store.con.execute(
+            "SELECT id FROM folders WHERE min_role='user' AND parent_id IS NULL"
+        ).fetchone()[0]
     return store.upsert_document(
         source_type="folder", path=path, title=title or path, content=text,
         content_hash=path + "h",
         chunks=[Chunk(position=0, heading_path=path, text=text)],
-        embed_inputs=[text], source_id=source_id,
+        embed_inputs=[text], folder_id=folder_id,
     )
 
 
 def _rbac_store(tmp_path):
     """Build a role-filtered store with three docs:
-    - team/a.md  → everyone source (visible to all roles)
-    - mgr/comp.md → managers source (visible to manager/admin only)
-    - upload/x.md → no source (uploads, visible to all)
+    - team/a.md  → user-tier folder (visible to all roles)
+    - mgr/comp.md → admin-tier folder (visible to admin/owner only)
+    - upload/x.md → user-tier folder (uploads, visible to all)
     All three docs contain the word "zebra" so search finds them.
     """
     db_dir = tmp_path / "db"
     db_dir.mkdir()
     con = connect(db_dir / "t.db", embedding_dim=32)
     store = Storage(con, FakeEmbedder(dim=32))
-    team = store.register_source("folder", "/r/team")
-    mgr = store.register_source("folder", "/r/mgr", access="managers")
-    _add_doc(store, "team/a.md", "public zebra roadmap", source_id=team)
-    _add_doc(store, "mgr/comp.md", "manager zebra compensation", source_id=mgr)
-    _add_doc(store, "upload/x.md", "uploaded zebra note", source_id=None)
+    rows = store.con.execute(
+        "SELECT min_role, id FROM folders WHERE parent_id IS NULL").fetchall()
+    by_role = {r: i for r, i in rows}
+    user_root = by_role["user"]
+    admin_root = by_role["admin"]
+    _add_doc(store, "team/a.md", "public zebra roadmap", folder_id=user_root)
+    _add_doc(store, "mgr/comp.md", "manager zebra compensation", folder_id=admin_root)
+    _add_doc(store, "upload/x.md", "uploaded zebra note", folder_id=user_root)
     return store
 
 
@@ -65,17 +72,17 @@ from hippo.mcp_server import (  # noqa: E402  (after helpers)
 
 def test_mcp_search_role_filtered(tmp_path):
     store = _rbac_store(tmp_path)
-    dev = {h["path"] for h in mcp_search(store, "developer", "zebra", 10)}
+    dev = {h["path"] for h in mcp_search(store, "user", "zebra", 10)}
     assert "mgr/comp.md" not in dev
     assert "team/a.md" in dev
 
-    mgr = {h["path"] for h in mcp_search(store, "manager", "zebra", 10)}
+    mgr = {h["path"] for h in mcp_search(store, "admin", "zebra", 10)}
     assert "mgr/comp.md" in mgr
 
 
 def test_mcp_search_returns_expected_keys(tmp_path):
     store = _rbac_store(tmp_path)
-    hits = mcp_search(store, "admin", "zebra", 5)
+    hits = mcp_search(store, "owner", "zebra", 5)
     assert hits  # at least one result
     for h in hits:
         assert {"doc_id", "path", "title", "section", "text"} <= h.keys()
@@ -84,7 +91,7 @@ def test_mcp_search_returns_expected_keys(tmp_path):
 def test_mcp_search_top_k_clamped_to_one(tmp_path):
     """top_k <= 0 should not crash (clamped to 1)."""
     store = _rbac_store(tmp_path)
-    hits = mcp_search(store, "admin", "zebra", 0)
+    hits = mcp_search(store, "owner", "zebra", 0)
     assert isinstance(hits, list)
 
 
@@ -95,28 +102,28 @@ def test_mcp_search_top_k_clamped_to_one(tmp_path):
 def test_mcp_list_get_grep_role_filtered(tmp_path):
     store = _rbac_store(tmp_path)
 
-    # list: developer cannot see managers source
-    dev_paths = {d["path"] for d in mcp_list_documents(store, "developer")}
+    # list: user cannot see admin-tier folder
+    dev_paths = {d["path"] for d in mcp_list_documents(store, "user")}
     assert "mgr/comp.md" not in dev_paths
     assert "team/a.md" in dev_paths
 
-    # admin sees everything; get the mgr doc id
+    # owner sees everything; get the mgr doc id
     mgr_id = next(
         d["doc_id"]
-        for d in mcp_list_documents(store, "admin")
+        for d in mcp_list_documents(store, "owner")
         if d["path"] == "mgr/comp.md"
     )
 
-    # read: developer cannot read a managers-only doc (returns error dict)
-    result = mcp_read_document(store, "developer", mgr_id)
+    # read: user cannot read an admin-tier doc (returns error dict)
+    result = mcp_read_document(store, "user", mgr_id)
     assert "error" in result
 
-    # read: manager CAN read it
-    result = mcp_read_document(store, "manager", mgr_id)
+    # read: admin CAN read it
+    result = mcp_read_document(store, "admin", mgr_id)
     assert result["path"] == "mgr/comp.md"
 
-    # grep: developer never sees mgr/comp.md
-    assert all(h.get("path") != "mgr/comp.md" for h in mcp_grep(store, "developer", "compensation"))
+    # grep: user never sees mgr/comp.md
+    assert all(h.get("path") != "mgr/comp.md" for h in mcp_grep(store, "user", "compensation"))
 
     # grep: admin sees it
     assert any(h.get("path") == "mgr/comp.md" for h in mcp_grep(store, "admin", "compensation"))
@@ -124,13 +131,13 @@ def test_mcp_list_get_grep_role_filtered(tmp_path):
 
 def test_mcp_read_document_unknown_id(tmp_path):
     store = _rbac_store(tmp_path)
-    result = mcp_read_document(store, "admin", 99999)
+    result = mcp_read_document(store, "owner", 99999)
     assert "error" in result
 
 
 def test_mcp_list_documents_returns_expected_keys(tmp_path):
     store = _rbac_store(tmp_path)
-    docs = mcp_list_documents(store, "admin")
+    docs = mcp_list_documents(store, "owner")
     assert docs
     for d in docs:
         assert {"doc_id", "path", "title", "summary"} <= d.keys()
@@ -142,7 +149,7 @@ def test_mcp_list_documents_returns_expected_keys(tmp_path):
 
 def test_mcp_grep_invalid_regex_returns_error_dict(tmp_path):
     store = _rbac_store(tmp_path)
-    result = mcp_grep(store, "admin", "[invalid")
+    result = mcp_grep(store, "owner", "[invalid")
     assert len(result) == 1 and "error" in result[0]
 
 
@@ -164,9 +171,9 @@ def test_build_mcp_server_registers_four_tools(tmp_path):
 def test_role_contextvar_default_and_require_auth(tmp_path):
     """Setting the contextvar routes through correctly; resetting clears it."""
     store = _rbac_store(tmp_path)
-    token = _mcp_role.set("developer")
+    token = _mcp_role.set("user")
     try:
-        # The contextvar is set to developer; use it explicitly in mcp_search
+        # The contextvar is set to user; use it explicitly in mcp_search
         result = mcp_search(store, _mcp_role.get(), "zebra", 10)
         assert "team/a.md" in {h["path"] for h in result}
     finally:

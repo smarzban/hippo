@@ -60,35 +60,33 @@ class Ingestor:
         self.max_doc_chars = max_doc_chars
         self.max_decompressed_bytes = max_decompressed_bytes
 
-    def ingest_file(self, path: Path, *, source_type: str, source_id: int | None = None) -> IngestResult:
+    def ingest_file(self, path: Path, *, source_type: str, folder_id: int) -> IngestResult:
         try:
             title, md = parse_file(path)
-            return self._index(str(path), title, md, source_type=source_type, source_id=source_id)
+            return self._index(str(path), title, md, source_type=source_type, folder_id=folder_id)
         except Exception as e:  # per-file isolation: one bad file never kills a sync
             log.warning("failed %s: %s", path, e)
             return IngestResult(path=str(path), status="failed", error=str(e))
 
-    def ingest_bytes(self, name: str, data: bytes, *, suffix: str = ".md",
-                     source_type: str = "upload") -> IngestResult:
+    def ingest_bytes(self, name: str, data: bytes, *, folder_id: int, path_prefix: str,
+                     suffix: str = ".md", source_type: str = "upload") -> IngestResult:
         try:
             if suffix.lower() not in SUPPORTED:
                 raise ValueError(f"unsupported file type: {suffix}")
             title, md = parse_bytes(name, data, suffix,
                                     max_decompressed=self.max_decompressed_bytes)
-            # Uploads have no stable source path: content-hash-qualify so two
-            # different files sharing a name coexist (mirrors the folder path).
-            digest = hashlib.sha256(md.encode()).hexdigest()[:8]
-            return self._index(f"upload/{digest}-{name}", title, md,
-                               source_type=source_type, source_id=None)
+            path = f"{path_prefix}/{name}" if path_prefix else name
+            return self._index(path, title, md, source_type=source_type, folder_id=folder_id)
         except Exception as e:
             log.warning("failed %s: %s", name, e)
             return IngestResult(path=name, status="failed", error=str(e))
 
-    def ingest_text(self, name: str, raw: str, *, suffix: str = ".md",
-                    source_type: str = "upload") -> IngestResult:
-        return self.ingest_bytes(name, raw.encode("utf-8"), suffix=suffix, source_type=source_type)
+    def ingest_text(self, name: str, raw: str, *, folder_id: int, path_prefix: str = "",
+                    suffix: str = ".md", source_type: str = "upload") -> IngestResult:
+        return self.ingest_bytes(name, raw.encode("utf-8"), folder_id=folder_id,
+                                 path_prefix=path_prefix, suffix=suffix, source_type=source_type)
 
-    def _index(self, path: str, title: str, md: str, *, source_type: str, source_id: int | None) -> IngestResult:
+    def _index(self, path: str, title: str, md: str, *, source_type: str, folder_id: int) -> IngestResult:
         if not md.strip():
             log.debug("skipped %s: empty content", path)
             return IngestResult(path=path, status="skipped")  # no ghost documents
@@ -114,7 +112,7 @@ class Ingestor:
         self.store.upsert_document(
             source_type=source_type, path=path, title=title, content=md,
             content_hash=content_hash, chunks=chunks, embed_inputs=embed_inputs,
-            summary=summary, source_id=source_id,
+            summary=summary, folder_id=folder_id,
         )
         result = IngestResult(path=path, status="updated" if existed else "added", chunks=len(chunks))
         log.info("ingested %s: %s (%d chunks)", path, result.status, result.chunks)
@@ -133,11 +131,14 @@ def _ignored(path: Path) -> bool:
     return any(part in IGNORED_DIRS for part in path.parts)
 
 
-def sync_folder(folder: Path, store: Storage, *, max_chars: int, overlap_chars: int,
-                enricher=None, access: str | None = None,
-                max_doc_chars: int | None = None) -> SyncReport:
-    """Sync one folder: ingest new/changed, remove vanished. Per-file isolation."""
-    source_id = store.register_source("folder", str(folder), access=access)
+def sync_folder(folder: Path, store: Storage, *, parent_id: int, max_chars: int,
+                overlap_chars: int, enricher=None, max_doc_chars: int | None = None) -> SyncReport:
+    """Sync one filesystem folder as a pull-only ('folder' origin) node under
+    parent_id, inheriting the parent's tier. Ingest new/changed, remove vanished."""
+    folder_id = store.folder_by_location(str(folder))
+    if folder_id is None:
+        folder_id = store.create_folder(parent_id=parent_id, name=folder.name,
+                                        origin="folder", location=str(folder))
     ing = Ingestor(store, max_chars=max_chars, overlap_chars=overlap_chars,
                    enricher=enricher, max_doc_chars=max_doc_chars)
     report = SyncReport()
@@ -147,11 +148,10 @@ def sync_folder(folder: Path, store: Storage, *, max_chars: int, overlap_chars: 
             continue
         if path.is_file() and path.suffix.lower() in SUPPORTED:
             seen.add(str(path))
-            report.results.append(ing.ingest_file(path, source_type="folder", source_id=source_id))
+            report.results.append(ing.ingest_file(path, source_type="folder", folder_id=folder_id))
         elif path.is_file():
-            # unsupported extensions are attempted so they show up in the failure report
-            report.results.append(ing.ingest_file(path, source_type="folder", source_id=source_id))
-    for stale in store.paths_for_source(source_id) - seen:
+            report.results.append(ing.ingest_file(path, source_type="folder", folder_id=folder_id))
+    for stale in store.paths_for_folder(folder_id) - seen:
         if store.delete_document_by_path(stale):
             report.removed += 1
     return report

@@ -24,3 +24,13 @@ def test_revoke_token_any_ignores_owner(tmp_path):
     assert s.revoke_token_any(tok_id) is True       # admin revokes without owning it
     assert s.list_all_tokens() == []
     assert s.revoke_token_any(tok_id) is False      # already gone
+
+
+def test_token_resolves_after_email_attribute_change(tmp_path):
+    s = _store(tmp_path)
+    s.set_role("dev@x.com", "user")
+    tok = s.create_token("dev@x.com", "laptop")
+    # email is now a mutable attribute on the surrogate-keyed row
+    s.con.execute("UPDATE users SET email='dev2@x.com' WHERE email='dev@x.com'")
+    s.con.commit()
+    assert s.resolve_token(tok) == "dev2@x.com"  # token followed the user_id

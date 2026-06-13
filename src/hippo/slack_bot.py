@@ -36,9 +36,9 @@ _MENTION = re.compile(r"<@[^>]+>")
 def surface_role(resolved_role: str, *, is_dm: bool) -> str:
     """Pick the role passed to the agent based on the Slack surface. DMs are
     private, so the asker's full role applies. A channel @mention has an audience,
-    so force the 'everyone'-access view (developer) regardless of who asks —
-    fails closed, never leaks manager-only docs into a public channel (spec §4)."""
-    return resolved_role if is_dm else "developer"
+    so force the 'everyone'-access view (user) regardless of who asks —
+    fails closed, never leaks admin-only docs into a public channel (spec §4)."""
+    return resolved_role if is_dm else "user"
 
 
 def strip_mention(text: str) -> str:
