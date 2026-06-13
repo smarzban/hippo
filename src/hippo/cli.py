@@ -176,6 +176,13 @@ def slack():
         typer.echo("Missing Slack tokens: set HIPPO_SLACK_BOT_TOKEN and "
                    "HIPPO_SLACK_APP_TOKEN.", err=True)
         raise typer.Exit(code=1)
+    if not settings.allowed_domain:
+        # The Slack bot is reachable by the whole workspace (incl. guests). Without
+        # a domain gate, every Slack profile email is auto-provisioned as developer
+        # and can query everyone-access docs. Strongly recommend setting it.
+        typer.echo("WARNING: HIPPO_ALLOWED_DOMAIN is unset — every Slack workspace "
+                   "user (including guests) can query Hippo. Set it to your work "
+                   "domain (e.g. superbalist.com) to gate access.", err=True)
 
     con = connect(settings.db_path, embedding_dim=settings.embedding_dim)
     store = Storage(con, build_embedder(settings))
