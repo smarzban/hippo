@@ -43,3 +43,38 @@ def test_set_role_rejects_invalid_and_self_demotion(tmp_path):
     assert c.put("/users/dev@x.com/role", json={"role": "wizard"}, headers=admin).status_code == 400
     # anti-lockout: admin cannot demote their own account
     assert c.put("/users/boss@x.com/role", json={"role": "developer"}, headers=admin).status_code == 400
+
+
+def test_tokens_self_service_and_secret_once(tmp_path):
+    app, store = _app(tmp_path)
+    dev = _bearer(store, "dev@x.com")
+    c = TestClient(app)
+    created = c.post("/tokens", json={"name": "laptop"}, headers=dev)
+    assert created.status_code == 200
+    body = created.json()
+    assert body["token"].startswith("hk_")          # secret returned once
+    # listing shows metadata only — never the secret
+    listed = c.get("/tokens", headers=dev).json()
+    assert any(t["id"] == body["id"] and t["name"] == "laptop" for t in listed)
+    assert all("token" not in t and "hk_" not in str(t.values()) for t in listed)
+
+
+def test_tokens_cross_user_revoke_blocked_for_dev_allowed_for_admin(tmp_path):
+    app, store = _app(tmp_path)
+    dev, admin = _bearer(store, "dev@x.com"), _bearer(store, "boss@x.com")
+    c = TestClient(app)
+    other_id = int(c.post("/tokens", json={"name": "x"}, headers=admin).json()["id"])  # admin's token
+    # developer cannot delete someone else's token
+    assert c.delete(f"/tokens/{other_id}", headers=dev).status_code == 404
+    # admin can
+    assert c.delete(f"/tokens/{other_id}", headers=admin).status_code == 200
+
+
+def test_tokens_all_view_is_admin_only(tmp_path):
+    app, store = _app(tmp_path)
+    dev, admin = _bearer(store, "dev@x.com"), _bearer(store, "boss@x.com")
+    c = TestClient(app)
+    c.post("/tokens", json={"name": "d"}, headers=dev)
+    assert c.get("/tokens?all=true", headers=dev).status_code == 403
+    all_rows = c.get("/tokens?all=true", headers=admin).json()
+    assert any(t.get("email") == "dev@x.com" for t in all_rows)
