@@ -314,6 +314,25 @@ class Storage:
             )
         return cur.rowcount > 0
 
+    def list_all_tokens(self) -> list[tuple[int, str, str, str, str | None]]:
+        """All users' tokens (admin view): (id, email, name, created_at, last_used_at).
+        Never returns the token secret — only the stored hash exists."""
+        with self._lock:
+            return [
+                (r[0], r[1], r[2], r[3], r[4])
+                for r in self.con.execute(
+                    "SELECT id, email, name, created_at, last_used_at "
+                    "FROM tokens ORDER BY email, id"
+                ).fetchall()
+            ]
+
+    def revoke_token_any(self, token_id: int) -> bool:
+        """Delete a token by id without the owner-email scope (admin revoke).
+        Returns True if a row was deleted."""
+        with self._lock, self.con:
+            cur = self.con.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
+        return cur.rowcount > 0
+
     # -- search --------------------------------------------------------------
 
     RRF_K = 60
