@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     github_branch: str = "main"
     ui_dist: str = ""  # path to built UI (ui/dist); empty = don't serve static UI
     mcp_enabled: bool = True  # mount the /mcp MCP server
+    # --- slack bot (spec: 2026-06-13-slack-integration) ---
+    slack_enabled: bool = False  # `hippo slack` refuses to start unless true
+    slack_bot_token: str = ""    # xoxb-… bot token
+    slack_app_token: str = ""    # xapp-… app-level token (Socket Mode)
 
     @property
     def admin_email_list(self) -> set[str]:
