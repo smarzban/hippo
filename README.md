@@ -98,13 +98,13 @@ When Hippo starts with an empty database it enters **setup mode**. Open the brow
 - **Owner account** — enter the owner email. For `password` mode, also set the initial password (8 characters minimum, validated inline). For `oidc`/`iap`, provide the email that will be the owner on first sign-in.
 - **Models** (optional) — override `chat_model`, `embedding_model`, and `embedding_dim`. Leave blank to use the env/`.env` defaults.
 
-Submitting posts to `POST /setup`, which creates the owner, persists the chosen operational config, marks setup complete, and reloads the app into the normal chat view. The three default root folders (`Default`/`Private`/`Owner`) keep their names — rename them later in **Settings → Folders**.
+Submitting posts to `POST /setup`, which creates the owner, persists the chosen operational config, marks setup complete, and reloads the app into the normal chat view. The single-page form does not send folder names, so the three default root folders keep their seeded names (`Default`/`Private`/`Owner`) — rename them later in **Settings → Folders**. (The `POST /setup` endpoint itself still accepts an optional `roots` rename for API callers; the wizard simply no longer uses it.)
 
 The setup endpoint is gated by the token and refuses to run again once setup is complete (409). The wizard is the recommended path for team deployments.
 
 ## Config store
 
-Hippo keeps a `config` table in the database for operational, **non-secret** settings. Owners can change these live via the browser (Instance Settings tab) or `PUT /config`. The DB value wins over the env default for these keys:
+Hippo keeps a `config` table in the database for operational, **non-secret** settings. Owners can change these live via the browser (System config tab) or `PUT /config`. The DB value wins over the env default for these keys:
 
 | Key | Notes |
 |---|---|

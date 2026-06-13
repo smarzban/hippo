@@ -175,7 +175,7 @@ fixed one real access-control issue in review.
   prereqs); live `chat_model` per `/chat` via `_live_agent()`; other operational keys resolved at
   construction from the overlay (change → restart); SessionMiddleware once if `secret_key`;
   `/settings/status` reports effective overlay values + `setup_complete`; React first-run wizard
-  (`setup.ts` pure logic, Vitest) + owner-only Instance Settings tab. Review fix: `allowed_domain`
+  (`setup.ts` pure logic, Vitest) + owner-only System config tab. Review fix: `allowed_domain`
   override now gates role resolution live; oidc/iap switch/setup prereqs enforced; oidc exchange uses
   effective client_id/public_url.
   **Caveat (by design):** `none` mode is open pre-setup (dev-only, emits a non-localhost startup
