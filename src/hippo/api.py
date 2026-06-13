@@ -147,6 +147,16 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     public_url = cfg.get("public_url")
     iap_audience = cfg.get("iap_audience")
 
+    # First-run wizard gate. Use HIPPO_SETUP_TOKEN (env, never stored) if set; else
+    # generate a random token and LOG it once at startup so the operator can read it
+    # from the logs. Only generated while setup is incomplete (after that the wizard
+    # is inert). Compared constant-time in POST /setup.
+    effective_setup_token = settings.setup_token
+    if not effective_setup_token and not store.is_setup_complete():
+        effective_setup_token = secrets.token_urlsafe(24)
+        log.warning("HIPPO_SETUP_TOKEN not set — first-run setup token is: %s",
+                    effective_setup_token)
+
     enricher = Enricher(settings.enrich_model) if settings.enrich_enabled else None
     ingestor = Ingestor(
         store, max_chars=settings.chunk_max_chars,
@@ -187,6 +197,17 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     if auth_mode == "iap" and iap_verifier is None and not iap_audience:
         raise ValueError("HIPPO_IAP_AUDIENCE is required when HIPPO_AUTH_MODE=iap")
     iap = iap_verifier or (IapVerifier(iap_audience) if auth_mode == "iap" else None)
+
+    # SessionMiddleware is added ONCE, up front, whenever a secret_key is set —
+    # not per auth-mode block. oidc/password sessions need it, and so does the
+    # first-run wizard's password auto-login (which runs while the pre-setup env
+    # mode may be `none`/`iap` but a secret_key is present). For none/iap with a
+    # secret_key, an unused session cookie is mounted — harmless. Starlette applies
+    # middleware in reverse-add order; a single up-front add is fine.
+    if settings.secret_key:
+        app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
+                           https_only=public_url.startswith("https"),
+                           same_site="lax")
 
     def _email_to_role(email: str) -> str:
         """Canonical domain-check + role resolution. Raises AuthError on domain failure.
@@ -263,9 +284,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     if auth_mode == "oidc":
         if not settings.secret_key:
             raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=oidc")
-        app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
-                           https_only=public_url.startswith("https"),
-                           same_site="lax")
+        # SessionMiddleware is added once up front (see above) when secret_key is set.
         exchange = code_exchanger or _exchange_code_with_google
 
         @app.get("/auth/login")
@@ -303,12 +322,17 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             request.session.clear()
             return RedirectResponse("/")
 
-    if auth_mode == "password":
-        if not settings.secret_key:
-            raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=password")
-        app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
-                           https_only=public_url.startswith("https"),
-                           same_site="lax")
+    if auth_mode == "password" and not settings.secret_key:
+        raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=password")
+    # Register the password login/logout routes whenever a secret_key is present —
+    # not only in construction-time password mode. This lets the first-run wizard
+    # switch to password mode and have the owner log in immediately (the wizard sets
+    # auth_mode=password in the DB overlay, which governs verify_request on the next
+    # restart; until then verify_request follows the env mode, but the login route
+    # must exist so the freshly created owner can authenticate). The route is inert
+    # in none/iap modes (verify_request ignores the session there) and the
+    # SessionMiddleware it needs is mounted once up front when secret_key is set.
+    if auth_mode == "password" or settings.secret_key:
 
         @app.post("/auth/login")
         async def auth_login_password(request: Request):
@@ -340,6 +364,65 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     @app.get("/auth/config")
     async def auth_config():
         return {"auth_mode": auth_mode}
+
+    @app.get("/setup/status")
+    async def setup_status():
+        return {"setup_complete": store.is_setup_complete(),
+                "auth_modes_available": ["password", "oidc", "iap"]}
+
+    @app.post("/setup")
+    async def run_setup(request: Request):
+        if store.is_setup_complete():
+            raise HTTPException(status_code=409, detail="setup already complete")
+        body = await request.json()
+        if not secrets.compare_digest(str(body.get("token", "")), effective_setup_token):
+            raise HTTPException(status_code=403, detail="invalid setup token")
+        mode = body.get("auth_mode")
+        if mode not in ("password", "oidc", "iap"):
+            raise HTTPException(status_code=400, detail="auth_mode must be password|oidc|iap")
+        owner_email = (body.get("owner_email") or "").strip().lower()
+        if not owner_email:
+            raise HTTPException(status_code=400, detail="owner_email is required")
+        # validate the chosen mode's required SECRET env vars are present (env-only)
+        if mode in ("password", "oidc") and not settings.secret_key:
+            raise HTTPException(status_code=400,
+                detail="HIPPO_SECRET_KEY (env) is required for this auth mode")
+        if mode == "oidc" and not settings.oidc_client_secret:
+            raise HTTPException(status_code=400,
+                detail="HIPPO_OIDC_CLIENT_SECRET (env) is required for oidc")
+        # create the owner
+        if mode == "password":
+            pw = body.get("owner_password") or ""
+            if len(pw) < MIN_PASSWORD_LEN:
+                raise HTTPException(status_code=400,
+                    detail=f"owner password must be at least {MIN_PASSWORD_LEN} characters")
+            store.set_password(owner_email, hash_password(pw), role="owner")
+        else:
+            store.set_role(owner_email, "owner")  # becomes owner on first oidc/iap sign-in
+        # name the three roots (rename the seeded folders)
+        roots = body.get("roots") or {}
+        for f in store.list_folders(role="owner"):
+            if f.parent_id is None and f.min_role in roots and roots[f.min_role]:
+                store.rename_folder(f.id, roots[f.min_role])
+        # persist operational config (DB-overridable keys only)
+        store.set_config("auth_mode", mode)
+        models = body.get("models") or {}
+        for k in ("chat_model", "enrich_model", "embedding_model", "embedding_dim"):
+            if k in models and models[k] not in (None, ""):
+                store.set_config(k, str(models[k]))
+        oidc = body.get("oidc") or {}
+        for k_body, k_cfg in (("client_id", "oidc_client_id"), ("public_url", "public_url")):
+            if oidc.get(k_body):
+                store.set_config(k_cfg, oidc[k_body])
+        if body.get("iap_audience"):
+            store.set_config("iap_audience", body["iap_audience"])
+        if body.get("allowed_domain"):
+            store.set_config("allowed_domain", body["allowed_domain"])
+        store.mark_setup_complete()
+        # for password mode, log the owner in immediately
+        if mode == "password":
+            request.session["user_id"] = store.get_credentials(owner_email)["user_id"]
+        return {"ok": True, "auth_mode": mode}
 
     @app.get("/health")
     async def health(_=Depends(verify_request)):
