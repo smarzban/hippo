@@ -15,22 +15,19 @@ import {
 import Settings from "./Settings";
 import { flattenTree, writableFolders, uploadReducer, type Folder } from "./folders";
 import {
-  WIZARD_STEPS,
   buildSetupPayload,
-  nextStep,
-  stepValid,
+  canSubmit,
+  fieldErrors,
   type SetupState,
 } from "./setup";
 
 type OpenDoc = { id: number; section: string };
 
 const INIT_SETUP: SetupState = {
-  step: 0,
   token: "",
   authMode: "password",
   ownerEmail: "",
   ownerPassword: "",
-  roots: { user: "Default", admin: "Private", owner: "Owner" },
   models: { chat_model: "", embedding_model: "", embedding_dim: 1536 },
 };
 
@@ -39,20 +36,11 @@ function SetupWizard() {
   const [submitErr, setSubmitErr] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const step = WIZARD_STEPS[state.step];
-  const isFirst = state.step === 0;
-  const isLast = state.step === WIZARD_STEPS.length - 1;
-  const canNext = stepValid(state);
-
-  function back() {
-    if (state.step > 0) setState((s) => ({ ...s, step: s.step - 1 }));
-  }
-
-  function advance() {
-    setState((s) => nextStep(s));
-  }
+  const errors = fieldErrors(state);
+  const ready = canSubmit(state);
 
   async function finish() {
+    if (!ready) return;
     setSubmitErr("");
     setSubmitting(true);
     try {
@@ -74,101 +62,88 @@ function SetupWizard() {
     }
   }
 
+  const label = { display: "block", fontWeight: 600, marginBottom: 2 } as const;
+  const field = { marginBottom: 12 } as const;
+
   return (
     <div className="app">
       <div className="empty signin">
         <span className="logo">{"\u{1F99B}"}</span>
         <h1>Hippo — First-run Setup</h1>
-        <p className="tagline">
-          Step {state.step + 1} of {WIZARD_STEPS.length}: <strong>{step}</strong>
-        </p>
+        <p className="tagline">Set up your instance — this runs once.</p>
 
-        <div style={{ width: "100%", maxWidth: 420, textAlign: "left" }}>
-          {step === "token" && (
-            <div>
-              <p>Enter the setup token (from <code>HIPPO_SETUP_TOKEN</code> env or logged at startup).</p>
+        <form
+          style={{ width: "100%", maxWidth: 420, textAlign: "left" }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void finish();
+          }}
+        >
+          <div style={field}>
+            <label style={label}>Setup token</label>
+            <input
+              type="text"
+              placeholder="From HIPPO_SETUP_TOKEN (env or startup log)"
+              value={state.token}
+              autoFocus
+              style={{ width: "100%" }}
+              onChange={(e) => setState((s) => ({ ...s, token: e.target.value }))}
+            />
+          </div>
+
+          <div style={field}>
+            <label style={label}>Authentication mode</label>
+            <select
+              value={state.authMode}
+              style={{ width: "100%" }}
+              onChange={(e) =>
+                setState((s) => ({ ...s, authMode: e.target.value as SetupState["authMode"] }))
+              }
+            >
+              <option value="password">Password (email + password)</option>
+              <option value="oidc">OIDC / Google (OAuth2)</option>
+              <option value="iap">IAP (Google Cloud Identity-Aware Proxy)</option>
+            </select>
+          </div>
+
+          <div style={field}>
+            <label style={label}>Owner email</label>
+            <input
+              type="email"
+              placeholder="you@example.com"
+              value={state.ownerEmail}
+              style={{ width: "100%" }}
+              onChange={(e) => setState((s) => ({ ...s, ownerEmail: e.target.value }))}
+            />
+            {errors.email && <p className="error" style={{ margin: "4px 0 0" }}>{errors.email}</p>}
+          </div>
+
+          {state.authMode === "password" && (
+            <div style={field}>
+              <label style={label}>Owner password</label>
               <input
-                type="text"
-                placeholder="Setup token"
-                value={state.token}
-                autoFocus
-                style={{ width: "100%", marginBottom: 8 }}
-                onChange={(e) => setState((s) => ({ ...s, token: e.target.value }))}
+                type="password"
+                placeholder="At least 8 characters"
+                value={state.ownerPassword}
+                style={{ width: "100%" }}
+                onChange={(e) => setState((s) => ({ ...s, ownerPassword: e.target.value }))}
               />
-            </div>
-          )}
-
-          {step === "auth" && (
-            <div>
-              <p>Choose the authentication mode for this Hippo instance.</p>
-              <select
-                value={state.authMode}
-                style={{ width: "100%", marginBottom: 8 }}
-                onChange={(e) =>
-                  setState((s) => ({ ...s, authMode: e.target.value as SetupState["authMode"] }))
-                }
-              >
-                <option value="password">Password (email + password)</option>
-                <option value="oidc">OIDC / Google (OAuth2)</option>
-                <option value="iap">IAP (Google Cloud Identity-Aware Proxy)</option>
-              </select>
-            </div>
-          )}
-
-          {step === "owner" && (
-            <div>
-              <p>Create the owner account.</p>
-              <input
-                type="email"
-                placeholder="Owner email"
-                value={state.ownerEmail}
-                autoFocus
-                style={{ width: "100%", marginBottom: 8 }}
-                onChange={(e) => setState((s) => ({ ...s, ownerEmail: e.target.value }))}
-              />
-              {state.authMode === "password" && (
-                <input
-                  type="password"
-                  placeholder="Owner password (min 8 chars)"
-                  value={state.ownerPassword}
-                  style={{ width: "100%", marginBottom: 8 }}
-                  onChange={(e) => setState((s) => ({ ...s, ownerPassword: e.target.value }))}
-                />
+              {errors.password && (
+                <p className="error" style={{ margin: "4px 0 0" }}>{errors.password}</p>
               )}
             </div>
           )}
 
-          {step === "roots" && (
-            <div>
-              <p>Name the three access-tier root folders.</p>
-              {(["user", "admin", "owner"] as const).map((tier) => (
-                <div key={tier} style={{ marginBottom: 8 }}>
-                  <label style={{ display: "block", fontWeight: 600, marginBottom: 2 }}>
-                    {tier} tier
-                  </label>
-                  <input
-                    type="text"
-                    value={state.roots[tier]}
-                    style={{ width: "100%" }}
-                    onChange={(e) =>
-                      setState((s) => ({ ...s, roots: { ...s.roots, [tier]: e.target.value } }))
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {step === "models" && (
-            <div>
-              <p>Configure models (optional — leave blank to use server defaults).</p>
-              <div style={{ marginBottom: 8 }}>
-                <label style={{ display: "block", fontWeight: 600, marginBottom: 2 }}>
-                  Chat model
-                </label>
+          <details style={{ marginBottom: 12 }}>
+            <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+              Models (optional — defaults from server env)
+            </summary>
+            <div style={{ marginTop: 8 }}>
+              <div style={field}>
+                <label style={label}>Chat model</label>
                 <input
                   type="text"
-                  placeholder="e.g. ollama:llama3 or openai:gpt-4o"
+                  placeholder="e.g. openai:gpt-4o"
                   value={state.models.chat_model}
                   style={{ width: "100%" }}
                   onChange={(e) =>
@@ -176,10 +151,8 @@ function SetupWizard() {
                   }
                 />
               </div>
-              <div style={{ marginBottom: 8 }}>
-                <label style={{ display: "block", fontWeight: 600, marginBottom: 2 }}>
-                  Embedding model
-                </label>
+              <div style={field}>
+                <label style={label}>Embedding model</label>
                 <input
                   type="text"
                   placeholder="e.g. openai:text-embedding-3-small"
@@ -193,10 +166,8 @@ function SetupWizard() {
                   }
                 />
               </div>
-              <div style={{ marginBottom: 8 }}>
-                <label style={{ display: "block", fontWeight: 600, marginBottom: 2 }}>
-                  Embedding dimension
-                </label>
+              <div style={field}>
+                <label style={label}>Embedding dimension</label>
                 <input
                   type="number"
                   value={state.models.embedding_dim}
@@ -210,39 +181,19 @@ function SetupWizard() {
                 />
               </div>
             </div>
-          )}
-
-          {step === "finish" && (
-            <div>
-              <p>Everything looks good. Click <strong>Finish</strong> to complete setup.</p>
-              <ul style={{ marginBottom: 8 }}>
-                <li>Auth mode: <strong>{state.authMode}</strong></li>
-                <li>Owner: <strong>{state.ownerEmail}</strong></li>
-                <li>Folders: {state.roots.user} / {state.roots.admin} / {state.roots.owner}</li>
-              </ul>
-            </div>
-          )}
+          </details>
 
           {submitErr && <p className="error">{submitErr}</p>}
 
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            {!isFirst && (
-              <button className="upload-btn" onClick={back} disabled={submitting}>
-                Back
-              </button>
-            )}
-            {!isLast && (
-              <button className="upload-btn" onClick={advance} disabled={!canNext}>
-                Next
-              </button>
-            )}
-            {isLast && (
-              <button className="upload-btn" onClick={finish} disabled={submitting}>
-                {submitting ? "Setting up…" : "Finish"}
-              </button>
-            )}
-          </div>
-        </div>
+          <button
+            className="upload-btn"
+            type="submit"
+            disabled={!ready || submitting}
+            style={{ marginTop: 4 }}
+          >
+            {submitting ? "Setting up…" : "Complete setup"}
+          </button>
+        </form>
       </div>
     </div>
   );
