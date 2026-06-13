@@ -97,12 +97,14 @@ def test_role_filtering_through_api(tmp_path):
     assert c.get(f"/documents/{doc_id}", headers=boss).status_code == 200
 
 
-def _fake_exchange():
+def _fake_exchange(seen=None):
     claims = {"iss": "https://accounts.google.com", "aud": "cid",
               "exp": int(time.time()) + 600, "email": "u@x.com", "email_verified": True}
 
-    def exchange(code, settings):
+    def exchange(code, settings, *, client_id, public_url):
         assert code == "authcode"
+        if seen is not None:
+            seen.update(client_id=client_id, public_url=public_url)
         return {"id_token": jwt.encode(claims, _OIDC_RSA_KEY, algorithm="RS256",
                                        headers={"kid": "oidc1"})}
     return exchange
@@ -126,6 +128,37 @@ def test_oidc_full_flow_sets_session(tmp_path):
     assert c.get("/me").json()["email"] == "u@x.com"
     c.get("/auth/logout")
     assert c.get("/documents").status_code == 401
+
+
+def test_oidc_exchange_uses_effective_client_id_and_public_url(tmp_path):
+    # env oidc_client_id/public_url differ from the DB overlay; the code exchange
+    # must use the EFFECTIVE (overlaid) values, matching login/callback.
+    from hippo.db import connect
+    from hippo.embeddings import FakeEmbedder
+    from hippo.storage import Storage
+    con = connect(tmp_path / "t.db", embedding_dim=32)
+    st = Storage(con, FakeEmbedder(dim=32))
+    st.set_config("oidc_client_id", "cid")          # token validation expects aud=cid
+    # http:// so the (non-secure) session cookie round-trips over TestClient's http
+    # transport — what matters here is that the OVERLAID value reaches the exchange.
+    st.set_config("public_url", "http://overlaid.example")
+    con.close()
+    s = _settings(tmp_path, auth_mode="oidc", secret_key="s3cret",
+                  oidc_client_id="env-cid", oidc_client_secret="cs",
+                  public_url="http://env.local")
+    seen = {}
+    app = build_app(s, code_exchanger=_fake_exchange(seen),
+                    google_key_fetcher=_OIDC_KEY_FETCHER)
+    c = TestClient(app, follow_redirects=False)
+    r = c.get("/auth/login")
+    from urllib.parse import parse_qs, urlparse
+    qs = parse_qs(urlparse(r.headers["location"]).query)
+    # /auth/login itself must redirect with the overlaid client_id + redirect_uri
+    assert qs["client_id"] == ["cid"]
+    assert qs["redirect_uri"] == ["http://overlaid.example/auth/callback"]
+    state = qs["state"][0]
+    c.get(f"/auth/callback?code=authcode&state={state}")
+    assert seen == {"client_id": "cid", "public_url": "http://overlaid.example"}
 
 
 def test_oidc_state_mismatch_rejected(tmp_path):

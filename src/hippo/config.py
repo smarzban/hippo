@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     slack_enabled: bool = False  # `hippo slack` refuses to start unless true
     slack_bot_token: str = ""    # xoxb-… bot token
     slack_app_token: str = ""    # xapp-… app-level token (Socket Mode)
+    setup_token: str = ""  # first-run wizard gate; if empty, a random one is logged at startup
 
     @property
     def admin_email_list(self) -> set[str]:
@@ -58,3 +59,35 @@ class Settings(BaseSettings):
 
 def get_settings() -> Settings:
     return Settings()
+
+
+# Operational keys the DB config store may override (env supplies the default).
+# Everything NOT here — provider keys, oidc_client_secret, secret_key, db_path,
+# setup_token, github_*, source_roots — is ENV-ONLY and never read from the DB.
+DB_OVERRIDABLE: frozenset[str] = frozenset({
+    "auth_mode", "chat_model", "enrich_model", "embedding_model", "embedding_dim",
+    "allowed_domain", "oidc_client_id", "public_url", "iap_audience",
+})
+
+_INT_KEYS = frozenset({"embedding_dim"})
+
+
+def _coerce(key: str, value: str):
+    return int(value) if key in _INT_KEYS else value
+
+
+class Config:
+    """Live operational config: a DB value (if set) overrides the env Settings
+    default — but ONLY for DB_OVERRIDABLE keys. Secrets/env-only keys always come
+    from Settings, so a stray DB row can never leak or override a secret."""
+
+    def __init__(self, settings: "Settings", store):
+        self.settings = settings
+        self.store = store
+
+    def get(self, key: str):
+        if key in DB_OVERRIDABLE:
+            v = self.store.get_config(key)
+            if v is not None:
+                return _coerce(key, v)
+        return getattr(self.settings, key)
