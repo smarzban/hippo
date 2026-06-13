@@ -66,6 +66,9 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT NOT NULL UNIQUE,
     role TEXT NOT NULL DEFAULT 'user'
         CHECK (role IN ('user','admin','owner')),
+    password_hash TEXT,                                  -- NULL for oidc/iap users
+    failed_logins INTEGER NOT NULL DEFAULT 0,
+    locked_until TEXT,                                   -- ISO ts; NULL = not locked
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

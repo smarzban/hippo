@@ -392,3 +392,42 @@ def test_token_revoke_and_list(store):
     other_id = store.list_tokens("b@x.com")[0][0]
     assert store.revoke_token(other_id, "a@x.com") is False
     assert store.resolve_token(t3) == "b@x.com"
+
+
+LOCKOUT_MAX = 5
+
+
+def test_set_password_creates_user_and_stores_hash(store):
+    store.set_password("alice@x.com", "hashed-1", role="admin")
+    creds = store.get_credentials("alice@x.com")
+    assert creds is not None
+    assert creds["password_hash"] == "hashed-1" and creds["role"] == "admin"
+    # set_password on an existing user updates the hash, keeps the role
+    store.set_password("alice@x.com", "hashed-2")
+    assert store.get_credentials("alice@x.com")["password_hash"] == "hashed-2"
+    assert store.get_credentials("alice@x.com")["role"] == "admin"
+
+
+def test_get_credentials_unknown_email_is_none(store):
+    assert store.get_credentials("nobody@x.com") is None
+
+
+def test_get_user_by_id_roundtrip(store):
+    store.set_password("bob@x.com", "h", role="owner")
+    uid = store.get_credentials("bob@x.com")["user_id"]
+    assert store.get_user_by_id(uid) == ("bob@x.com", "owner")
+    assert store.get_user_by_id(999999) is None
+
+
+def test_lockout_after_max_failures_then_reset(store):
+    store.set_password("eve@x.com", "h")
+    for _ in range(LOCKOUT_MAX):
+        store.record_failed_login("eve@x.com")
+    creds = store.get_credentials("eve@x.com")
+    assert creds["failed_logins"] >= LOCKOUT_MAX
+    assert creds["locked_until"] is not None       # lock set
+    assert store.is_locked("eve@x.com") is True
+    store.reset_login_state("eve@x.com")           # successful login clears it
+    creds = store.get_credentials("eve@x.com")
+    assert creds["failed_logins"] == 0 and creds["locked_until"] is None
+    assert store.is_locked("eve@x.com") is False

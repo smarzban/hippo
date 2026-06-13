@@ -9,7 +9,8 @@ from the indexed docs, with `[path > section]` citations. Personal-first, team-r
 - `docs/superpowers/specs/2026-06-11-knowledge-hub-decisions.md` — decision log (why; 9 ADRs incl. all rejected alternatives)
 - `docs/superpowers/plans/2026-06-11-knowledge-hub.md` — the 15-task build plan (code has a few post-plan hardening fixes the plan text doesn't show)
 - `docs/superpowers/plans/2026-06-12-roadmap.md` — roadmap / action list (post-v1 hardening + features)
-- `docs/superpowers/plans/2026-06-13-sp1-roles-and-folders.md` — **SP1 implementation plan** (roles & folder tree; current branch)
+- `docs/superpowers/plans/2026-06-13-sp1-roles-and-folders.md` — SP1 implementation plan (roles & folder tree)
+- `docs/superpowers/plans/2026-06-13-sp2-password-auth.md` — **SP2 implementation plan** (password auth; current branch)
 
 Naming: the project was "knowledgeHub" during design (docs keep that name); the product/package is **hippo** (from hippocampus).
 
@@ -22,8 +23,12 @@ agent.py       build_agent(model) -> Pydantic AI agent, deps=HubDeps(store, role
                Tool output is framed as ⟦untrusted document data⟧…⟦end⟧ (prompt-injection boundary).
                System prompt enforces cite-everything + never-improvise + untrusted-content rule. defer_model_check=True (don't remove: construction must not need API keys)
 api.py         build_app(settings, model_override=None): /chat streams Vercel AI protocol via VercelAIAdapter.dispatch_request
-               (deps + usage_limits kwargs work on pydantic-ai 1.107). verify_request real: modes none|oidc|iap + bearer tokens every mode.
+               (deps + usage_limits kwargs work on pydantic-ai 1.107). verify_request real: modes none|oidc|iap|password + bearer tokens every mode.
                require_admin (rank>=1) guards folder/user mutations; require_owner (rank>=2) guards owner-only ops. /me endpoint. /auth/login,/auth/callback,/auth/logout (oidc).
+               password mode: SessionMiddleware (requires HIPPO_SECRET_KEY; build_app raises ValueError if unset); session keyed by user_id (surrogate).
+               POST /auth/login (email+password, argon2id verify, lockout check, generic 401 — no enumeration), POST /auth/logout (clears session).
+               GET /auth/config (public, returns {auth_mode}; no secrets). POST /me/password (self-service change; requires current password, 8-char minimum).
+               POST /users/{email}/password (admin reset; returns new secret once; gated by tier so admins cannot reset higher-tier users).
                /ingest: size-checked against HIPPO_MAX_UPLOAD_BYTES (413) and HIPPO_MAX_DOC_CHARS (skipped); takes folder_ids (repeated form field): ingests into each destination folder; write-gated by can_write(caller_role, folder.min_role, folder.origin).
                /folders: GET (role-filtered list with writable flag), POST (admin+), PATCH (rename/move, admin+), DELETE (admin+), POST /{id}/resync (admin+, folder-origin only). Allowlist via HIPPO_SOURCE_ROOTS.
                /users (admin): GET list, PUT /{email}/role with anti-lockout guard.
@@ -34,15 +39,17 @@ api.py         build_app(settings, model_override=None): /chat streams Vercel AI
 mcp_server.py  FastMCP server exposing search/read_document/list_documents/grep; mounted at /mcp in api.py with bearer-token auth + role filtering via the _mcp_role contextvar; `hippo mcp` runs it over stdio (as owner, no token).
 auth.py        AuthenticatedUser(email, role), AuthError, check_domain, resolve_role (shared identity→role: normalize+domain-gate+ensure_user+owner-bootstrap for HIPPO_ADMIN_EMAILS, used by api.py and slack_bot.py),
                IapVerifier (ES256 IAP assertions, injectable key_fetcher),
-               validate_google_id_token (claims-only, code-flow tokens). Mode wiring lives in api.py: none|oidc|iap + bearer tokens any mode.
+               validate_google_id_token (claims-only, code-flow tokens). Mode wiring lives in api.py: none|oidc|iap|password + bearer tokens any mode.
+               hash_password(pw)->str, verify_password(hashed, pw)->bool (argon2id; catches Argon2Error so callers get a clean bool),
+               set_password_hasher(hasher) (test hook: swap for reduced-cost profile). Never log or return a hash.
                Role FILTERING lives in storage.py, not here.
 chunking.py    chunk_markdown(): heading-aware, atomic code fences, char-based ~750-token chunks; overlap tail is re-checked against max_chars before prepending
-cli.py         Typer: sync [--watch] / add / search / reindex / serve / mcp / slack / eval / backup / role set/list / token create
+cli.py         Typer: sync [--watch] / add / search / reindex / serve / mcp / slack / eval / backup / role set/list / token create/list/revoke / user set-password
 slack_bot.py   Slack Q&A bot: Socket Mode via slack-bolt. Pure helpers
                (surface_role/build_history/format_answer/answer_question) + handle_event
                adapter (tested with a fake client) + build_slack_app wiring. Split-by-surface
                access: DM=asker's role, channel @mention=user-tier only. `hippo slack` runs it.
-config.py      Settings, env prefix HIPPO_ (pydantic-settings)
+config.py      Settings, env prefix HIPPO_ (pydantic-settings). auth_mode: Literal["none","oidc","iap","password"]
 db.py          connect() -> sqlite3: folder-tree schema (folders adjacency table, documents.folder_id, surrogate users(id PK) + tokens(user_id FK)), WAL, sqlite-vec, FTS5 + sync triggers.
                Seeds three root folders on first open (Default/user, Private/admin, Owner/owner). Legacy-DB guard: raises RuntimeError("recreate the database") if documents.source_id found.
 embeddings.py  Embedder protocol; OpenAIEmbedder (default text-embedding-3-small); FakeEmbedder (deterministic, tests/offline)
@@ -59,6 +66,10 @@ storage.py     Storage(con, embedder): ALL SQL lives here. upsert/delete/get/lis
                Folder CRUD: get_folder, list_folders(role), create_folder(parent_id, name, origin, location), rename_folder, move_folder (rewrites whole subtree tier), delete_folder (cascades), folder_path (slash-joined ancestor path), folder_by_location.
                Users/roles (ensure_user, set_role, list_users), surrogate-keyed tokens (create_token, resolve_token,
                list_tokens(email), revoke_token(id,email), list_all_tokens() admin view, revoke_token_any(id) admin revoke).
+               Local credentials + lockout: set_password(email, hash, *, role), get_credentials(email)->dict|None (user_id/email/role/password_hash/failed_logins/locked_until),
+               get_user_by_id(id)->(email,role)|None, record_failed_login(email) (increments counter; sets locked_until after LOCKOUT_MAX_FAILURES=5),
+               reset_login_state(email) (clears on successful login), is_locked(email)->bool (DB-clock comparison).
+               LOCKOUT_MAX_FAILURES=5, LOCKOUT_MINUTES=15 (class constants; hardcoded defaults). password_hash is never returned by any API endpoint.
                Role-filtered retrieval: search_hybrid/grep/list_documents/get_document take keyword-only `role` with NO default.
                _role_filter(role) -> SQL fragment + params using readable_min_roles() from roles.py (the single definition of rank logic).
 ```
@@ -73,8 +84,8 @@ Token secret shown once after POST; list views show metadata only.
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (238 tests, <6s, ZERO network — must stay that way)
-cd ui && npm test                  # 15 vitest (folders + citations suites)
+uv run pytest                      # full suite (259 tests, <6s, ZERO network — must stay that way)
+cd ui && npm test                  # 19 vitest (folders + citations + auth suites)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all synced folders
 uv run hippo serve                 # API :8000
 cd ui && npm run dev               # chat UI :5173
@@ -129,9 +140,13 @@ implemented on branch `build/settings-ui` (PR pending). **SP1 (roles & content-f
 roles renamed user/admin/owner; flat sources replaced by a folder adjacency tree with rank-filtered
 retrieval; surrogate-keyed users+tokens; /folders CRUD API; multi-destination /ingest; React Folders
 tab + role-scoped upload modal; pure roles.py module; legacy-DB guard. Implemented on branch
-`build/sp1-roles-and-folders` (PR pending). 238 pytest + 15 vitest, eval 4/4 on seed fixtures, UI builds clean.
+`build/sp1-roles-and-folders` (PR pending). **SP2 (built-in password auth):** 4th auth mode
+`password` (email+password, argon2id, lockout 5 fails/15 min, 7-day session), POST /auth/login +
+/auth/logout + GET /auth/config, self-service POST /me/password, admin reset POST /users/{email}/password,
+break-glass `hippo user set-password` CLI, React login screen + password-change + admin-reset UI.
+Implemented on branch `build/sp2-password-auth` (PR pending). 259 pytest + 19 vitest, eval 4/4 on seed fixtures, UI builds clean.
 
-**Active plan:** see `docs/superpowers/plans/2026-06-13-sp1-roles-and-folders.md`. Next: SP2 (password/local auth) or scale (Postgres+pgvector).
+**Active plan:** see `docs/superpowers/plans/2026-06-13-sp2-password-auth.md`. Next: scale (Postgres+pgvector), SP3 setup wizard, MCP client/connectors.
 
 **Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown),
 PDF parsing (planned), Postgres+pgvector migration (reimplement Storage), hierarchical summaries, GraphRAG.

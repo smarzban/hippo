@@ -21,7 +21,8 @@ from starlette.responses import JSONResponse, RedirectResponse
 
 from .agent import HubDeps, build_agent
 from .mcp_server import _mcp_role, build_mcp_server
-from .auth import AuthError, AuthenticatedUser, IapVerifier, check_domain, resolve_role, validate_google_id_token
+from .auth import (AuthError, AuthenticatedUser, IapVerifier, check_domain,
+                   hash_password, resolve_role, validate_google_id_token, verify_password)
 from .config import Settings
 from .db import connect
 from .embeddings import build_embedder
@@ -96,6 +97,9 @@ class RoleIn(BaseModel):
 
 class TokenIn(BaseModel):
     name: str = ""
+
+
+MIN_PASSWORD_LEN = 8
 
 
 def _usage_limits(settings: Settings) -> UsageLimits:
@@ -196,6 +200,16 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             except AuthError as e:
                 log.warning("auth denied (iap): %s", e)
                 raise HTTPException(status_code=401, detail=str(e))
+        if settings.auth_mode == "password":
+            uid = request.session.get("user_id")
+            if not uid:
+                raise HTTPException(status_code=401, detail="not signed in")
+            found = store.get_user_by_id(uid)
+            if found is None:
+                request.session.clear()
+                raise HTTPException(status_code=401, detail="not signed in")
+            email, _role = found
+            return _user_for(email)   # re-resolves role (bootstrap/admin_emails honored)
         email = request.session.get("email", "")  # oidc: session cookie (Task 10)
         if not email:
             log.warning("auth denied: no session")
@@ -265,6 +279,44 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         async def auth_logout(request: Request):
             request.session.clear()
             return RedirectResponse("/")
+
+    if settings.auth_mode == "password":
+        if not settings.secret_key:
+            raise ValueError("HIPPO_SECRET_KEY is required when HIPPO_AUTH_MODE=password")
+        app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
+                           https_only=settings.public_url.startswith("https"),
+                           same_site="lax")
+
+        @app.post("/auth/login")
+        async def auth_login_password(request: Request):
+            body = await request.json()
+            email = (body.get("email") or "").strip().lower()
+            password = body.get("password") or ""
+            creds = store.get_credentials(email)
+            # Generic failure for missing user / no local password / bad password.
+            generic = HTTPException(status_code=401, detail="invalid email or password")
+            if store.is_locked(email):
+                raise HTTPException(status_code=401,
+                    detail=f"account locked — try again in up to {store.LOCKOUT_MINUTES} minutes")
+            if creds is None or not creds["password_hash"]:
+                # still do nothing leak-y; no counter to bump on a non-user
+                raise generic
+            if not verify_password(creds["password_hash"], password):
+                store.record_failed_login(email)
+                raise generic
+            store.reset_login_state(email)
+            request.session["user_id"] = creds["user_id"]
+            user = _user_for(email)
+            return {"email": user.email, "role": user.role}
+
+        @app.post("/auth/logout")
+        async def auth_logout_password(request: Request):
+            request.session.clear()
+            return {"ok": True}
+
+    @app.get("/auth/config")
+    async def auth_config():
+        return {"auth_mode": settings.auth_mode}
 
     @app.get("/health")
     async def health(_=Depends(verify_request)):
@@ -466,6 +518,40 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                        "remove them from that env var to change their role")
         store.set_role(target, body.role)
         return {"email": target, "role": body.role}
+
+    @app.post("/me/password")
+    async def change_own_password(request: Request,
+                                  user: AuthenticatedUser = Depends(verify_request)):
+        body = await request.json()
+        current = body.get("current") or ""
+        new = body.get("new") or ""
+        creds = store.get_credentials(user.email)
+        if creds is None or not creds["password_hash"] or not verify_password(
+                creds["password_hash"], current):
+            raise HTTPException(status_code=403, detail="current password is incorrect")
+        if len(new) < MIN_PASSWORD_LEN:
+            raise HTTPException(status_code=400,
+                detail=f"new password must be at least {MIN_PASSWORD_LEN} characters")
+        store.set_password(user.email, hash_password(new))
+        return {"ok": True}
+
+    @app.post("/users/{email}/password")
+    async def admin_reset_password(email: str,
+                                   user: AuthenticatedUser = Depends(require_admin)):
+        target = email.strip().lower()
+        creds = store.get_credentials(target)
+        if creds is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        # Compare against the target's EFFECTIVE role: a HIPPO_ADMIN_EMAILS user is
+        # force-promoted to owner at request time (resolve_role), so their stored
+        # role may understate their power. Using the stored role would let a rank-1
+        # admin reset (and hijack/lock out) a bootstrap owner's local credential.
+        target_role = "owner" if target in settings.admin_email_list else creds["role"]
+        if rank(target_role) > rank(user.role):
+            raise HTTPException(status_code=403, detail="cannot reset a user above your tier")
+        new_pw = secrets.token_urlsafe(12)   # >= MIN_PASSWORD_LEN; shown once
+        store.set_password(target, hash_password(new_pw))
+        return {"email": target, "password": new_pw}
 
     @app.get("/tokens")
     async def list_tokens_route(all_users: bool = Query(False, alias="all"),
