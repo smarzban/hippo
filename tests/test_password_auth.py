@@ -66,3 +66,40 @@ def test_bearer_token_still_works_in_password_mode(tmp_path):
     tok = app.state.store.create_token("owner@x.com")
     c = TestClient(app)
     assert c.get("/me", headers={"Authorization": f"Bearer {tok}"}).json()["role"] == "owner"
+
+
+MIN_PW_LEN = 8
+
+
+def test_self_service_password_change(tmp_path):
+    c = TestClient(_app_with_owner(tmp_path))
+    c.post("/auth/login", json={"email": "owner@x.com", "password": "s3cret-pass"})
+    # wrong current → 403
+    assert c.post("/me/password", json={"current": "nope", "new": "brandnew-pass"}).status_code == 403
+    # too short → 400
+    assert c.post("/me/password", json={"current": "s3cret-pass", "new": "short"}).status_code == 400
+    # ok
+    assert c.post("/me/password", json={"current": "s3cret-pass", "new": "brandnew-pass"}).status_code == 200
+    c.post("/auth/logout")
+    assert c.post("/auth/login", json={"email": "owner@x.com", "password": "brandnew-pass"}).status_code == 200
+
+
+def test_admin_reset_returns_secret_once_and_is_gated(tmp_path):
+    app = _app_with_owner(tmp_path)
+    app.state.store.set_password("dev@x.com", hash_password("old-pass-dev"), role="user")
+    c = TestClient(app)
+    c.post("/auth/login", json={"email": "owner@x.com", "password": "s3cret-pass"})
+    r = c.post("/users/dev@x.com/password", json={})
+    assert r.status_code == 200 and len(r.json()["password"]) >= MIN_PW_LEN
+    new_pw = r.json()["password"]
+    # the reset password actually works
+    c.post("/auth/logout")
+    assert c.post("/auth/login", json={"email": "dev@x.com", "password": new_pw}).status_code == 200
+
+
+def test_admin_reset_requires_admin(tmp_path):
+    app = _app_with_owner(tmp_path)
+    app.state.store.set_password("dev@x.com", hash_password("p"), role="user")
+    c = TestClient(app)
+    c.post("/auth/login", json={"email": "dev@x.com", "password": "p"})  # rank user
+    assert c.post("/users/owner@x.com/password", json={}).status_code == 403

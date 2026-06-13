@@ -99,6 +99,9 @@ class TokenIn(BaseModel):
     name: str = ""
 
 
+MIN_PASSWORD_LEN = 8
+
+
 def _usage_limits(settings: Settings) -> UsageLimits:
     """Cap the agent's *tool calls* (ADR D9's ~15 research budget). request_limit
     bounds model requests, not tool calls — one request can emit several — so it
@@ -515,6 +518,35 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                        "remove them from that env var to change their role")
         store.set_role(target, body.role)
         return {"email": target, "role": body.role}
+
+    @app.post("/me/password")
+    async def change_own_password(request: Request,
+                                  user: AuthenticatedUser = Depends(verify_request)):
+        body = await request.json()
+        current = body.get("current") or ""
+        new = body.get("new") or ""
+        creds = store.get_credentials(user.email)
+        if creds is None or not creds["password_hash"] or not verify_password(
+                creds["password_hash"], current):
+            raise HTTPException(status_code=403, detail="current password is incorrect")
+        if len(new) < MIN_PASSWORD_LEN:
+            raise HTTPException(status_code=400,
+                detail=f"new password must be at least {MIN_PASSWORD_LEN} characters")
+        store.set_password(user.email, hash_password(new))
+        return {"ok": True}
+
+    @app.post("/users/{email}/password")
+    async def admin_reset_password(email: str,
+                                   user: AuthenticatedUser = Depends(require_admin)):
+        target = email.strip().lower()
+        creds = store.get_credentials(target)
+        if creds is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        if rank(creds["role"]) > rank(user.role):
+            raise HTTPException(status_code=403, detail="cannot reset a user above your tier")
+        new_pw = secrets.token_urlsafe(12)   # >= MIN_PASSWORD_LEN; shown once
+        store.set_password(target, hash_password(new_pw))
+        return {"email": target, "password": new_pw}
 
     @app.get("/tokens")
     async def list_tokens_route(all_users: bool = Query(False, alias="all"),
