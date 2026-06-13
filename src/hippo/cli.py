@@ -96,9 +96,12 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
         if not folders:
             typer.echo("no sources registered; run: hippo sync <folder>")
             raise typer.Exit(1)
+        default_root = next(
+            f.id for f in store.list_folders(role="owner")
+            if f.parent_id is None and f.min_role == "user")
         for f in folders:
             report = sync_folder(
-                f, store, max_chars=settings.chunk_max_chars,
+                f, store, parent_id=default_root, max_chars=settings.chunk_max_chars,
                 overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
                 max_doc_chars=settings.max_doc_chars,
             )
@@ -118,11 +121,15 @@ def sync(folder: str = typer.Argument(None), watch: bool = typer.Option(False, "
 
 @app.command()
 def add(file: str):
-    """Ingest a single file."""
+    """Ingest a single file into the Default folder."""
     settings = Settings()
-    _, ing = _store(settings)
-    res = ing.ingest_file(Path(file), source_type="upload")
-    typer.echo(f"{res.path}: {res.status} ({res.chunks} chunks)" + (f" error: {res.error}" if res.error else ""))
+    store, ing = _store(settings)
+    default_root = next(
+        f.id for f in store.list_folders(role="owner")
+        if f.parent_id is None and f.min_role == "user")
+    res = ing.ingest_file(Path(file), source_type="upload", folder_id=default_root)
+    typer.echo(f"{res.path}: {res.status} ({res.chunks} chunks)"
+               + (f" error: {res.error}" if res.error else ""))
     if res.status == "failed":
         raise typer.Exit(1)
 

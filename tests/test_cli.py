@@ -47,10 +47,10 @@ def test_search_command(tmp_path):
 
 def test_role_set_and_list(tmp_path):
     env = _env(tmp_path)
-    r = runner.invoke(app, ["role", "set", "a@x.com", "manager"], env=env)
+    r = runner.invoke(app, ["role", "set", "a@x.com", "admin"], env=env)
     assert r.exit_code == 0
     r = runner.invoke(app, ["role", "list"], env=env)
-    assert "manager" in r.output and "a@x.com" in r.output
+    assert "admin" in r.output and "a@x.com" in r.output
     r = runner.invoke(app, ["role", "set", "a@x.com", "superuser"], env=env)
     assert r.exit_code != 0
 
