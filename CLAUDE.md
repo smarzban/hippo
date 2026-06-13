@@ -22,7 +22,10 @@ api.py         build_app(settings, model_override=None): /chat streams Vercel AI
                (deps + usage_limits kwargs work on pydantic-ai 1.107). verify_request real: modes none|oidc|iap + bearer tokens every mode.
                require_admin guards POST/DELETE /sources. /me endpoint. /auth/login,/auth/callback,/auth/logout (oidc).
                /ingest: size-checked against HIPPO_MAX_UPLOAD_BYTES (413) and HIPPO_MAX_DOC_CHARS (skipped); takes repo field: commits to GitHub when configured (status "committed") else direct unversioned ingest.
-               /sources allowlist via HIPPO_SOURCE_ROOTS; DELETE /sources/{id}.
+               /sources allowlist via HIPPO_SOURCE_ROOTS; DELETE /sources/{id}; POST /sources/{id}/resync (admin).
+               /users (admin): GET list, PUT /{email}/role with anti-lockout guard.
+               /tokens: GET/POST (self-service, secret returned once), DELETE /{id} (self or admin); GET ?all=true (admin).
+               /settings/status (admin): auth mode, models, repo bools, counts — no secrets.
                Serves ui/dist as static files when HIPPO_UI_DIST is set (single origin, :8000).
                Mounts FastMCP server at /mcp (HIPPO_MCP_ENABLED, default true) with _McpBearerAuth middleware (bearer token → role via _mcp_role contextvar).
 mcp_server.py  FastMCP server exposing search/read_document/list_documents/grep; mounted at /mcp in api.py with bearer-token auth + role filtering via the _mcp_role contextvar; `hippo mcp` runs it over stdio (as admin, no token).
@@ -49,18 +52,21 @@ parsers.py     .md/.txt/.html/.docx -> (title, canonical markdown). SUPPORTED se
 storage.py     Storage(con, embedder): ALL SQL lives here. upsert/delete/get/list docs,
                search_hybrid (FTS5 BM25 + vec KNN merged via RRF, k=60), grep (raises ValueError on bad regex/timeout/pattern-too-long).
                backup(path) via VACUUM INTO for consistent snapshots.
-               Users/roles (ensure_user, set_role, list_users), hashed tokens (create_token, resolve_token),
+               Users/roles (ensure_user, set_role, list_users), hashed tokens (create_token, resolve_token,
+               list_tokens(email), revoke_token(id,email), list_all_tokens() admin view, revoke_token_any(id) admin revoke),
                source access levels ('everyone'|'managers', access=None preserves on re-register), delete_source.
                Role-filtered retrieval: search_hybrid/grep/list_documents/get_document take keyword-only `role` with NO default.
 ```
 
 `ui/` — Vite + React 19 + `@ai-sdk/react` v2 `useChat` + `DefaultChatTransport({api:"/chat"})`.
-Vite dev-server proxies /chat,/ingest,/documents,/sources to :8000. Tool parts render as progress lines.
+Vite dev-server proxies /chat,/ingest,/documents,/sources,/users,/tokens,/settings to :8000. Tool parts render as progress lines.
+`Settings.tsx` — gear-toggle Settings view; role-gated tabs (admin: Sources/Users/Tokens/Status; others: Tokens only).
+Token secret shown once after POST; list views show metadata only.
 
 ## Commands
 
 ```bash
-uv run pytest                      # full suite (190+ tests, <5s, ZERO network — must stay that way)
+uv run pytest                      # full suite (211 tests, <5s, ZERO network — must stay that way)
 uv run hippo sync <folder>         # ingest; re-run with no arg re-syncs all registered sources
 uv run hippo serve                 # API :8000
 cd ui && npm run dev               # chat UI :5173
@@ -107,9 +113,10 @@ accepts .docx) implemented on branch `build/docx-parsing` (PR pending). Roadmap 
 FastMCP at /mcp with bearer-token auth + role filtering, `hippo mcp` stdio command) implemented on
 branch `build/mcp-server` (PR pending). Roadmap item 7 (Slack bot: Socket Mode, role-filtered Q&A,
 DM+channel @mention, thread-aware history) implemented on branch `build/slack-integration` (PR pending).
-190+ tests, eval 4/4 on seed fixtures, UI builds clean.
+Roadmap item 9 (Settings UI: gear toggle, role-gated tabs, self-service tokens, admin sources/users/status)
+implemented on branch `build/settings-ui` (PR pending). 211 tests, eval 4/4 on seed fixtures, UI builds clean.
 
-**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. Next: scale (Postgres+pgvector), MCP client/connectors, settings UI, deploy.
+**Active plan:** see `docs/superpowers/plans/2026-06-12-roadmap.md`. Next: scale (Postgres+pgvector), MCP client/connectors, deploy.
 
 **Deferred (spec §12):** Google Drive connector (interface: `list_items()` + `fetch()` -> markdown),
 PDF parsing (planned), Postgres+pgvector migration (reimplement Storage), hierarchical summaries, GraphRAG.

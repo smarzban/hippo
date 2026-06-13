@@ -291,6 +291,169 @@ main { flex: 1; overflow-y: auto; padding: 1.25rem 0; }
 
 @keyframes pulse { 50% { opacity: 0.45; } }
 
+/* ---------- gear button ---------- */
+.gear {
+  background: none;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 0.3rem 0.6rem;
+  font-size: 1rem;
+  cursor: pointer;
+  color: var(--muted);
+  line-height: 1;
+  box-shadow: var(--shadow);
+}
+.gear:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- settings view ---------- */
+.settings {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--panel-border);
+}
+.settings-head h2 { margin: 0; font-size: 1rem; }
+.settings-head button {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+}
+.settings-head button:hover { text-decoration: underline; }
+
+.settings-tabs {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.settings-tabs button {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 0.3rem 0.85rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.settings-tabs button:hover { border-color: var(--accent); color: var(--accent); }
+.settings-tabs button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.panel p { margin: 0; font-size: 0.88rem; color: var(--muted); }
+.panel table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.panel td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--panel-border); vertical-align: middle; }
+.panel tr:last-child td { border-bottom: 0; }
+.panel td button {
+  background: none;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  color: var(--text);
+  margin-right: 0.3rem;
+}
+.panel td button:hover { border-color: var(--accent); color: var(--accent); }
+.panel select {
+  font-size: 0.82rem;
+  font-family: inherit;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.row input[type="text"], .row input:not([type]) {
+  flex: 1;
+  min-width: 10rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.85rem;
+  outline: none;
+}
+.row input:focus { border-color: var(--accent); }
+.row button {
+  background: var(--accent);
+  border: 0;
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  color: var(--accent-text);
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.row button:hover { opacity: 0.88; }
+.row label { font-size: 0.82rem; display: flex; align-items: center; gap: 0.3rem; color: var(--muted); }
+
+.secret {
+  background: var(--cite-bg);
+  border: 1px solid var(--cite-border);
+  border-radius: 10px;
+  padding: 0.7rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+.secret code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+  word-break: break-all;
+  color: var(--cite-text);
+  flex: 1;
+}
+.secret button {
+  background: none;
+  border: 1px solid var(--cite-border);
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--cite-text);
+}
+.secret button:hover { border-color: var(--accent); color: var(--accent); }
+
+.status dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; font-size: 0.87rem; }
+.status dt { color: var(--muted); font-weight: 500; }
+.status dd { margin: 0; }
+
 /* ---------- composer ---------- */
 form {
   display: flex;
