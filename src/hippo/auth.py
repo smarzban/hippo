@@ -18,7 +18,7 @@ class AuthError(Exception):
 @dataclass
 class AuthenticatedUser:
     email: str
-    role: str  # developer | manager | admin
+    role: str  # user | admin | owner
 
 
 def check_domain(email: str, allowed_domain: str) -> None:
@@ -28,14 +28,14 @@ def check_domain(email: str, allowed_domain: str) -> None:
 
 def resolve_role(store: "Storage", settings: "Settings", email: str) -> str:
     """Canonical identity → role: normalize, enforce the domain gate, ensure the
-    user row (first-timers default to 'developer'), then apply the admin-email
+    user row (first-timers default to 'user'), then apply the admin-email
     bootstrap. Raises AuthError if the email is out of the allowed domain. Shared
     by the HTTP bearer path (api.py) and the Slack bot."""
     email = email.strip().lower()
     check_domain(email, settings.allowed_domain)  # raises AuthError
     role = store.ensure_user(email)
     if email in settings.admin_email_list:
-        role = "admin"  # env bootstrap always wins (spec §1)
+        role = "owner"  # env bootstrap is the top tier (spec §3)
     return role
 
 
