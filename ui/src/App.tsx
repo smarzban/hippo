@@ -4,7 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DocDrawer } from "./DocDrawer";
-import { buildDocIndex, type DocIndex, type DocMeta, MARKER_RE, processCitations } from "./citations";
+import {
+  buildDocIndex,
+  type DocIndex,
+  type DocMeta,
+  MARKER_RE,
+  processCitations,
+  stripNoSourcesMarker,
+} from "./citations";
 import Settings from "./Settings";
 
 type OpenDoc = { id: number; section: string };
@@ -47,9 +54,10 @@ function AssistantText({
   docIndex: DocIndex;
   onOpen: (id: number, section: string) => void;
 }) {
+  const { text: grounded, refused } = useMemo(() => stripNoSourcesMarker(text), [text]);
   const { processed, sources } = useMemo(
-    () => processCitations(text, docIndex),
-    [text, docIndex],
+    () => processCitations(grounded, docIndex),
+    [grounded, docIndex],
   );
 
   const components = useMemo(
@@ -107,7 +115,7 @@ function AssistantText({
           </ol>
         </div>
       )}
-      {sources.length === 0 && processed.trim().length > 120 && (
+      {sources.length === 0 && !refused && processed.trim().length > 120 && (
         <p className="no-sources" title="Hippo should answer only from indexed docs with citations.">
           ⚠ No sources cited — verify independently.
         </p>
