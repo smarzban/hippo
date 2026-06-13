@@ -19,6 +19,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import UsageLimits
 
 from .agent import HubDeps
+from .auth import AuthError, resolve_role
 from .config import Settings
 from .storage import Storage
 
@@ -90,3 +91,90 @@ async def answer_question(agent, store: Storage, settings: Settings, *,
         log.exception("agent run failed for a Slack message")
         return "Sorry — I hit an error answering that. Please try again."
     return format_answer(result.output)
+
+
+_NO_ACCESS = ("You don't have access to Hippo. Sign in to Slack with your work "
+              "email, or contact an admin.")
+_PLACEHOLDER = "_Searching the knowledge base…_"
+
+
+async def handle_event(event: dict, client, *, store: Storage, agent,
+                       settings: Settings, bot_user_id: str, is_dm: bool) -> None:
+    """Handle one inbound Slack message (DM or channel @mention). Pure of Bolt:
+    takes the event dict + a duck-typed async web client, so it is fully testable
+    with a fake client. Resolves identity, applies the split-by-surface access
+    rule, reconstructs history, posts a placeholder, runs the agent, updates it."""
+    # Ignore the bot's own / other bots' messages — no self-reply loops.
+    if _is_bot(event, bot_user_id):
+        return
+    user_id = event.get("user")
+    channel = event["channel"]
+    question = strip_mention(event.get("text", ""))
+    if not user_id or not question:
+        return
+
+    # Channel @mention replies live in a thread (parent = the mention, or the
+    # thread it's already in); DMs are flat.
+    thread_ts = None if is_dm else (event.get("thread_ts") or event["ts"])
+
+    # Identity → role. No email or out-of-domain → polite refusal, never answer.
+    info = await client.users_info(user=user_id)
+    email = (info.get("user", {}).get("profile", {}) or {}).get("email")
+    if not email:
+        await client.chat_postMessage(channel=channel, text=_NO_ACCESS, thread_ts=thread_ts)
+        return
+    try:
+        role = resolve_role(store, settings, email)
+    except AuthError:
+        log.warning("slack: out-of-domain user %s", email)
+        await client.chat_postMessage(channel=channel, text=_NO_ACCESS, thread_ts=thread_ts)
+        return
+    role = surface_role(role, is_dm=is_dm)
+
+    # Reconstruct prior turns (exclude the current message), then placeholder→update.
+    history = build_history(
+        await _fetch_prior(client, channel, thread_ts, current_ts=event["ts"]),
+        bot_user_id=bot_user_id,
+    )
+    placeholder = await client.chat_postMessage(
+        channel=channel, text=_PLACEHOLDER, thread_ts=thread_ts)
+    answer = await answer_question(
+        agent, store, settings, question=question, role=role, history=history)
+    await client.chat_update(channel=channel, ts=placeholder["ts"], text=answer)
+
+
+async def _fetch_prior(client, channel: str, thread_ts: str | None,
+                       *, current_ts: str) -> list[dict]:
+    """Fetch the conversation so far, chronological, excluding the current message.
+    Channel thread → conversations.replies; DM → conversations.history (reversed)."""
+    if thread_ts is not None:
+        resp = await client.conversations_replies(
+            channel=channel, ts=thread_ts, limit=HISTORY_TURNS + 1)
+        msgs = resp.get("messages", [])
+    else:
+        resp = await client.conversations_history(channel=channel, limit=HISTORY_TURNS + 1)
+        msgs = list(reversed(resp.get("messages", [])))
+    return [m for m in msgs if m.get("ts") != current_ts]
+
+
+def build_slack_app(store: Storage, agent, settings: Settings):
+    """Wire Bolt handlers for app_mention (channel) and message.im (DM) onto
+    handle_event. Thin glue — not unit-tested (the runner is in cli.py)."""
+    from slack_bolt.async_app import AsyncApp
+
+    app = AsyncApp(token=settings.slack_bot_token, token_verification_enabled=False)
+
+    @app.event("app_mention")
+    async def _on_mention(event, client, context):
+        await handle_event(event, client, store=store, agent=agent, settings=settings,
+                           bot_user_id=context.bot_user_id, is_dm=False)
+
+    @app.event("message")
+    async def _on_message(event, client, context):
+        # message.im only; ignore message_changed/deleted subtypes and non-DM.
+        if event.get("channel_type") != "im" or event.get("subtype"):
+            return
+        await handle_event(event, client, store=store, agent=agent, settings=settings,
+                           bot_user_id=context.bot_user_id, is_dm=True)
+
+    return app
