@@ -571,6 +571,19 @@ class Storage:
     def mark_setup_complete(self) -> None:
         self.set_config(self.SETUP_COMPLETE_KEY, "1")
 
+    def claim_setup(self) -> bool:
+        """Atomically claim the first-run setup. Sets setup_complete='1' ONLY if
+        it is not already set, returning True iff THIS call did the claiming.
+        Concurrent /setup requests that race past is_setup_complete() converge
+        here so exactly one creates the owner; the loser gets a 409."""
+        with self._lock, self.con:
+            cur = self.con.execute(
+                "INSERT INTO config(key, value) VALUES (?, '1') "
+                "ON CONFLICT(key) DO NOTHING",
+                (self.SETUP_COMPLETE_KEY,),
+            )
+            return cur.rowcount > 0
+
     def document_count(self) -> int:
         with self._lock:
             return self.con.execute("SELECT count(*) FROM documents").fetchone()[0]

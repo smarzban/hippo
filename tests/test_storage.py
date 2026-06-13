@@ -447,3 +447,12 @@ def test_config_get_set_and_setup_flag(store):
 
 def test_document_count(store):
     assert store.document_count() == 0
+
+
+def test_claim_setup_is_atomic_once(store):
+    # First claim wins; every subsequent claim loses (idempotent flag already set).
+    assert store.is_setup_complete() is False
+    assert store.claim_setup() is True
+    assert store.is_setup_complete() is True
+    assert store.claim_setup() is False
+    assert store.claim_setup() is False

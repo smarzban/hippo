@@ -112,13 +112,17 @@ def _usage_limits(settings: Settings) -> UsageLimits:
     )
 
 
-def _exchange_code_with_google(code: str, settings: Settings) -> dict:
+def _exchange_code_with_google(code: str, settings: Settings, *,
+                               client_id: str, public_url: str) -> dict:
     import httpx
 
+    # client_id / public_url are the EFFECTIVE (DB-overlay-aware) values so the
+    # token exchange matches the redirect_uri/client used at /auth/login. The
+    # client_secret stays env-only (never DB-overridable).
     r = httpx.post("https://oauth2.googleapis.com/token", data={
-        "code": code, "client_id": settings.oidc_client_id,
+        "code": code, "client_id": client_id,
         "client_secret": settings.oidc_client_secret,
-        "redirect_uri": f"{settings.public_url}/auth/callback",
+        "redirect_uri": f"{public_url}/auth/callback",
         "grant_type": "authorization_code",
     }, timeout=10)
     r.raise_for_status()
@@ -211,8 +215,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     def _email_to_role(email: str) -> str:
         """Canonical domain-check + role resolution. Raises AuthError on domain failure.
-        Used by both the HTTP bearer path (_user_for) and the MCP ASGI middleware."""
-        return resolve_role(store, settings, email)
+        Used by both the HTTP bearer path (_user_for) and the MCP ASGI middleware.
+        Passes the EFFECTIVE allowed_domain (DB overlay wins) so a domain set via the
+        wizard / PUT /config actually gates role resolution live."""
+        return resolve_role(store, settings, email, allowed_domain=cfg.get("allowed_domain"))
 
     def _user_for(email: str) -> AuthenticatedUser:
         email = email.strip().lower()
@@ -304,7 +310,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         async def auth_callback(request: Request, code: str, state: str):
             if state != request.session.pop("oauth_state", None):
                 raise HTTPException(status_code=400, detail="state mismatch")
-            tokens = await run_in_threadpool(exchange, code, settings)
+            tokens = await run_in_threadpool(
+                exchange, code, settings, client_id=oidc_client_id, public_url=public_url)
             try:
                 email = validate_google_id_token(
                     tokens.get("id_token", ""), oidc_client_id,
@@ -383,13 +390,25 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         owner_email = (body.get("owner_email") or "").strip().lower()
         if not owner_email:
             raise HTTPException(status_code=400, detail="owner_email is required")
-        # validate the chosen mode's required SECRET env vars are present (env-only)
-        if mode in ("password", "oidc") and not settings.secret_key:
-            raise HTTPException(status_code=400,
-                detail="HIPPO_SECRET_KEY (env) is required for this auth mode")
-        if mode == "oidc" and not settings.oidc_client_secret:
-            raise HTTPException(status_code=400,
-                detail="HIPPO_OIDC_CLIENT_SECRET (env) is required for oidc")
+        oidc = body.get("oidc") or {}
+        models = body.get("models") or {}
+        # validate the chosen mode's required SECRETS + effective prereqs are present.
+        # For oidc/iap the client_id/audience come from the request body (they'll be
+        # persisted below), so validate those body values now — you can't enable a
+        # mode that would be unusable / brick on the next restart.
+        _require_mode_prereqs(mode, oidc_client_id=oidc.get("client_id"),
+                              iap_audience=body.get("iap_audience"))
+        # reject a non-int-coercible embedding_dim before any side effects
+        if "embedding_dim" in models and models["embedding_dim"] not in (None, ""):
+            try:
+                int(models["embedding_dim"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                    detail="embedding_dim must be an integer")
+        # atomic claim: only the first concurrent request proceeds; a racing second
+        # valid request loses here and gets a 409 (no double-owner creation).
+        if not store.claim_setup():
+            raise HTTPException(status_code=409, detail="setup already complete")
         # create the owner
         if mode == "password":
             pw = body.get("owner_password") or ""
@@ -404,13 +423,17 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         for f in store.list_folders(role="owner"):
             if f.parent_id is None and f.min_role in roots and roots[f.min_role]:
                 store.rename_folder(f.id, roots[f.min_role])
-        # persist operational config (DB-overridable keys only)
+        # persist operational config (DB-overridable keys only). The setup_complete
+        # flag was already set atomically by claim_setup() above.
         store.set_config("auth_mode", mode)
-        models = body.get("models") or {}
+        # embedding_model/dim only persisted on a fresh index (parity with PUT /config:
+        # chunk_vec dim is fixed once documents exist). Normally moot — setup runs fresh.
+        persist_embed = store.document_count() == 0
         for k in ("chat_model", "enrich_model", "embedding_model", "embedding_dim"):
+            if k in ("embedding_model", "embedding_dim") and not persist_embed:
+                continue
             if k in models and models[k] not in (None, ""):
                 store.set_config(k, str(models[k]))
-        oidc = body.get("oidc") or {}
         for k_body, k_cfg in (("client_id", "oidc_client_id"), ("public_url", "public_url")):
             if oidc.get(k_body):
                 store.set_config(k_cfg, oidc[k_body])
@@ -418,7 +441,6 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             store.set_config("iap_audience", body["iap_audience"])
         if body.get("allowed_domain"):
             store.set_config("allowed_domain", body["allowed_domain"])
-        store.mark_setup_complete()
         # for password mode, log the owner in immediately
         if mode == "password":
             request.session["user_id"] = store.get_credentials(owner_email)["user_id"]
@@ -659,16 +681,39 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         store.set_password(target, hash_password(new_pw))
         return {"email": target, "password": new_pw}
 
-    def _validate_auth_switch(user: AuthenticatedUser, target: str) -> None:
-        if target not in ("password", "oidc", "iap"):
-            raise HTTPException(status_code=400, detail="auth_mode must be password|oidc|iap")
-        # the target mode's required SECRET env vars must be present (env-only)
+    def _require_mode_prereqs(target: str, *, oidc_client_id: str | None = None,
+                              iap_audience: str | None = None) -> None:
+        """Reject enabling a mode that would be unusable / brick the instance.
+        Checks both env-only SECRETS and the EFFECTIVE (DB-overlay or same-request)
+        non-secret prerequisites. oidc_client_id/iap_audience override the stored
+        cfg value when supplied in the SAME request body (so /setup validates the
+        effective-after-write value before persisting)."""
         if target in ("password", "oidc") and not settings.secret_key:
             raise HTTPException(status_code=400,
-                detail="HIPPO_SECRET_KEY (env) is required for the target auth mode")
-        if target == "oidc" and not settings.oidc_client_secret:
-            raise HTTPException(status_code=400,
-                detail="HIPPO_OIDC_CLIENT_SECRET (env) is required for oidc")
+                detail="HIPPO_SECRET_KEY (env) is required for this auth mode")
+        if target == "oidc":
+            if not settings.oidc_client_secret:
+                raise HTTPException(status_code=400,
+                    detail="HIPPO_OIDC_CLIENT_SECRET (env) is required for oidc")
+            cid = oidc_client_id if oidc_client_id is not None else cfg.get("oidc_client_id")
+            if not cid:
+                raise HTTPException(status_code=400,
+                    detail="oidc_client_id is required for oidc mode "
+                           "(set it via /config or the setup wizard)")
+        if target == "iap":
+            aud = iap_audience if iap_audience is not None else cfg.get("iap_audience")
+            if not aud:
+                raise HTTPException(status_code=400,
+                    detail="iap_audience is required for iap mode "
+                           "(set it via /config or the setup wizard)")
+
+    def _validate_auth_switch(user: AuthenticatedUser, target: str,
+                              *, oidc_client_id: str | None = None,
+                              iap_audience: str | None = None) -> None:
+        if target not in ("password", "oidc", "iap"):
+            raise HTTPException(status_code=400, detail="auth_mode must be password|oidc|iap")
+        # the target mode's required SECRET env vars + effective prereqs must be present
+        _require_mode_prereqs(target, oidc_client_id=oidc_client_id, iap_audience=iap_audience)
         # anti-lockout: an owner must hold a valid credential in the TARGET mode
         owners = [e for e, r in store.list_users() if r == "owner"] + sorted(settings.admin_email_list)
         if target == "password":
@@ -696,13 +741,25 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             if key not in DB_OVERRIDABLE:
                 raise HTTPException(status_code=400,
                     detail=f"{key!r} is not a settable operational key (secrets/env-only keys are rejected)")
+        # reject a non-int-coercible embedding_dim now (else it surfaces as a 500
+        # later inside Config._coerce when the overlay is read)
+        if "embedding_dim" in body:
+            try:
+                int(body["embedding_dim"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                    detail="embedding_dim must be an integer")
         # embedding model/dim cannot change once documents exist (chunk_vec dim is fixed)
         if ("embedding_model" in body or "embedding_dim" in body) and store.document_count() > 0:
             raise HTTPException(status_code=409,
                 detail="embedding_model/embedding_dim can't change after documents exist — "
                        "run `hippo reindex` (CLI) to re-embed")
         if "auth_mode" in body:
-            _validate_auth_switch(user, body["auth_mode"])
+            # consider oidc_client_id/iap_audience set in this SAME request when
+            # validating prereqs for the target mode.
+            _validate_auth_switch(user, body["auth_mode"],
+                oidc_client_id=body.get("oidc_client_id"),
+                iap_audience=body.get("iap_audience"))
         for key, value in body.items():
             store.set_config(key, str(value))
         return {"ok": True}

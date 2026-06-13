@@ -2,6 +2,7 @@
 from fastapi.testclient import TestClient
 
 from hippo.api import build_app
+from hippo.auth import IapVerifier
 from hippo.config import Settings
 
 
@@ -139,3 +140,76 @@ def test_auth_switch_to_mode_missing_secret_env_rejected(tmp_path):
     c = TestClient(app)
     r = c.put("/config", json={"auth_mode": "oidc"})
     assert r.status_code == 400 and "secret" in r.json()["detail"].lower()
+
+
+def test_allowed_domain_db_override_gates_role_resolution_live(tmp_path):
+    # iap mode, env has NO domain restriction. Set allowed_domain via the DB
+    # overlay; a bearer token for an out-of-domain email must be rejected (403)
+    # while an in-domain one works — proving the override gates live.
+    s = _settings(tmp_path, auth_mode="iap", iap_audience="aud")
+    app = build_app(s, iap_verifier=IapVerifier("aud", key_fetcher=lambda: {}))
+    store = app.state.store
+    store.set_config("allowed_domain", "x.com")
+    in_dom = store.create_token("a@x.com")
+    out_dom = store.create_token("a@y.com")
+    c = TestClient(app)
+    assert c.get("/me", headers={"Authorization": f"Bearer {in_dom}"}).status_code == 200
+    assert c.get("/me", headers={"Authorization": f"Bearer {out_dom}"}).status_code == 403
+
+
+def test_auth_switch_to_iap_requires_audience(tmp_path):
+    # switching to iap with no iap_audience configured must be rejected (would brick)
+    app = build_app(_settings(tmp_path))
+    c = TestClient(app)
+    r = c.put("/config", json={"auth_mode": "iap"})
+    assert r.status_code == 400 and "iap_audience" in r.json()["detail"].lower()
+    # once an audience is set (same request body), the switch is allowed
+    assert c.put("/config", json={"auth_mode": "iap", "iap_audience": "aud"}).status_code == 200
+
+
+def test_auth_switch_to_oidc_requires_client_id(tmp_path):
+    # secret_key + client_secret present, but no oidc_client_id configured -> 400
+    app = build_app(_settings(tmp_path, secret_key="k", oidc_client_secret="cs"))
+    c = TestClient(app)
+    r = c.put("/config", json={"auth_mode": "oidc"})
+    assert r.status_code == 400 and "client_id" in r.json()["detail"].lower()
+    # providing the client_id in the same request makes it usable -> ok
+    assert c.put("/config", json={"auth_mode": "oidc",
+                                  "oidc_client_id": "cid"}).status_code == 200
+
+
+def test_setup_oidc_requires_client_id_in_body(tmp_path):
+    s = _settings(tmp_path, setup_token="t", secret_key="k", oidc_client_secret="cs")
+    c = TestClient(build_app(s))
+    r = c.post("/setup", json={"token": "t", "auth_mode": "oidc", "owner_email": "o@x.com",
+                               "oidc": {"public_url": "https://h"}, "models": {}})
+    assert r.status_code == 400 and "client_id" in r.json()["detail"].lower()
+
+
+def test_setup_iap_requires_audience_in_body(tmp_path):
+    s = _settings(tmp_path, setup_token="t")
+    c = TestClient(build_app(s))
+    r = c.post("/setup", json={"token": "t", "auth_mode": "iap", "owner_email": "o@x.com",
+                               "models": {}})
+    assert r.status_code == 400 and "iap_audience" in r.json()["detail"].lower()
+    # providing it in the body succeeds
+    s2 = _settings(tmp_path, setup_token="t", db_path=tmp_path / "t2.db")
+    c2 = TestClient(build_app(s2))
+    assert c2.post("/setup", json={"token": "t", "auth_mode": "iap", "owner_email": "o@x.com",
+                                   "iap_audience": "aud", "models": {}}).status_code == 200
+
+
+def test_put_config_embedding_dim_non_int_rejected(tmp_path):
+    app = build_app(_settings(tmp_path))
+    c = TestClient(app)
+    r = c.put("/config", json={"embedding_dim": "abc"})
+    assert r.status_code == 400 and "embedding_dim" in r.json()["detail"].lower()
+
+
+def test_setup_embedding_dim_non_int_rejected(tmp_path):
+    s = _settings(tmp_path, setup_token="t", secret_key="k")
+    c = TestClient(build_app(s))
+    r = c.post("/setup", json={"token": "t", "auth_mode": "password", "owner_email": "o@x.com",
+                               "owner_password": "ownerpass1",
+                               "models": {"embedding_dim": "abc"}})
+    assert r.status_code == 400 and "embedding_dim" in r.json()["detail"].lower()
