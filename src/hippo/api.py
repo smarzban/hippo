@@ -28,6 +28,7 @@ from .embeddings import build_embedder
 from .enrich import Enricher
 from .github import GitHubContentsClient, GitHubError
 from .ingest import Ingestor, sync_folder
+from .roles import rank
 from .storage import Storage
 
 
@@ -77,10 +78,16 @@ class _McpBearerAuth:
             _mcp_role.reset(tok)
 
 
-class SourceIn(BaseModel):
-    kind: str = "folder"
-    location: str
-    access: Literal["everyone", "managers"] | None = None
+class FolderIn(BaseModel):
+    parent_id: int
+    name: str
+    origin: Literal["manual", "folder", "repo"] = "manual"
+    location: str | None = None
+
+
+class FolderPatch(BaseModel):
+    name: str | None = None
+    parent_id: int | None = None
 
 
 class RoleIn(BaseModel):
@@ -178,7 +185,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 raise HTTPException(status_code=401, detail="invalid token")
             return _user_for(email)
         if settings.auth_mode == "none":
-            return AuthenticatedUser(email="local", role="admin")
+            return AuthenticatedUser(email="local", role="owner")
         if settings.auth_mode == "iap":
             assertion = request.headers.get("x-goog-iap-jwt-assertion", "")
             if not assertion:
@@ -196,8 +203,13 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         return _user_for(email)
 
     async def require_admin(user: AuthenticatedUser = Depends(verify_request)) -> AuthenticatedUser:
-        if user.role != "admin":
+        if rank(user.role) < 1:  # admin or owner
             raise HTTPException(status_code=403, detail="admin only")
+        return user
+
+    async def require_owner(user: AuthenticatedUser = Depends(verify_request)) -> AuthenticatedUser:
+        if rank(user.role) < 2:
+            raise HTTPException(status_code=403, detail="owner only")
         return user
 
     if settings.auth_mode == "oidc":
@@ -322,53 +334,96 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=404, detail="document not found")
         return {"id": doc.id, "path": doc.path, "title": doc.title, "content": doc.content, "summary": doc.summary}
 
-    @app.get("/sources")
-    async def sources(user: AuthenticatedUser = Depends(verify_request)):
-        return [{"id": i, "kind": k, "location": loc, "access": acc}
-                for i, k, loc, acc in store.list_sources(role=user.role)]
+    @app.get("/folders")
+    async def folders(user: AuthenticatedUser = Depends(verify_request)):
+        from .roles import can_write
+        return [
+            {"id": f.id, "parent_id": f.parent_id, "name": f.name, "tier": f.min_role,
+             "origin": f.origin, "doc_count": f.doc_count,
+             "writable": can_write(user.role, f.min_role, f.origin)}
+            for f in store.list_folders(role=user.role)
+        ]
 
-    @app.post("/sources")
-    async def add_source(body: SourceIn, user: AuthenticatedUser = Depends(require_admin)):
-        folder = Path(body.location).resolve()  # symlink/.. tricks must not escape the roots
-        roots = settings.source_root_list
-        if settings.auth_mode != "none" and not roots:
-            raise HTTPException(status_code=403,
-                detail="source registration is disabled: no HIPPO_SOURCE_ROOTS configured")
-        if roots and not any(folder == r or r in folder.parents for r in roots):
-            raise HTTPException(status_code=403, detail=f"{folder} is outside HIPPO_SOURCE_ROOTS")
-        if not folder.is_dir():
-            raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
-        report = await run_in_threadpool(
-            sync_folder, folder, store, max_chars=settings.chunk_max_chars,
-            overlap_chars=settings.chunk_overlap_chars, enricher=enricher, access=body.access,
-            max_doc_chars=settings.max_doc_chars,
-        )
-        return {"report": {"added": report.added, "updated": report.updated,
-                           "skipped": report.skipped, "removed": report.removed,
-                           "failed": report.failed}}
+    @app.post("/folders")
+    async def create_folder(body: FolderIn, user: AuthenticatedUser = Depends(require_admin)):
+        from .roles import rank as _rank
+        parent = store.get_folder(body.parent_id)
+        if parent is None:
+            raise HTTPException(status_code=404, detail="parent folder not found")
+        if _rank(user.role) < _rank(parent.min_role):
+            raise HTTPException(status_code=403, detail="cannot create a folder above your tier")
+        try:
+            if body.origin == "manual":
+                fid = store.create_folder(parent_id=body.parent_id, name=body.name)
+            else:
+                # mount a synced folder / repo, then sync it
+                if not body.location:
+                    raise HTTPException(status_code=400, detail="location required for synced origin")
+                if body.origin == "folder":
+                    folder = Path(body.location).resolve()
+                    roots = settings.source_root_list
+                    if settings.auth_mode != "none" and not roots:
+                        raise HTTPException(status_code=403,
+                            detail="folder mounts disabled: no HIPPO_SOURCE_ROOTS configured")
+                    if roots and not any(folder == r or r in folder.parents for r in roots):
+                        raise HTTPException(status_code=403,
+                            detail=f"{folder} is outside HIPPO_SOURCE_ROOTS")
+                    if not folder.is_dir():
+                        raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
+                    fid = store.create_folder(parent_id=body.parent_id, name=body.name,
+                                              origin="folder", location=str(folder))
+                    await run_in_threadpool(
+                        sync_folder, folder, store, parent_id=body.parent_id,
+                        max_chars=settings.chunk_max_chars,
+                        overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+                        max_doc_chars=settings.max_doc_chars)
+                else:  # repo
+                    fid = store.create_folder(parent_id=body.parent_id, name=body.name,
+                                              origin="repo", location=body.location)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        f = store.get_folder(fid)
+        return {"id": f.id, "name": f.name, "tier": f.min_role, "origin": f.origin}
 
-    @app.delete("/sources/{source_id}")
-    async def remove_source(source_id: int, user: AuthenticatedUser = Depends(require_admin)):
-        if not store.delete_source(source_id):
-            raise HTTPException(status_code=404, detail="source not found")
-        return {"deleted": source_id}
+    @app.patch("/folders/{folder_id}")
+    async def patch_folder(folder_id: int, body: FolderPatch,
+                           user: AuthenticatedUser = Depends(require_admin)):
+        if store.get_folder(folder_id) is None:
+            raise HTTPException(status_code=404, detail="folder not found")
+        try:
+            if body.name is not None:
+                store.rename_folder(folder_id, body.name)
+            if body.parent_id is not None:
+                store.move_folder(folder_id, body.parent_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"id": folder_id}
 
-    @app.post("/sources/{source_id}/resync")
-    async def resync_source(source_id: int, user: AuthenticatedUser = Depends(require_admin)):
-        match = next((s for s in store.list_sources(role="admin") if s[0] == source_id), None)
-        if match is None:
-            raise HTTPException(status_code=404, detail="source not found")
-        location = match[2]  # (id, kind, location, access)
-        # Guard a vanished/unmounted path: sync_folder treats an empty folder as
-        # "everything was deleted" and would wipe this source's documents.
-        if not Path(location).is_dir():
+    @app.delete("/folders/{folder_id}")
+    async def delete_folder(folder_id: int, user: AuthenticatedUser = Depends(require_admin)):
+        try:
+            ok = store.delete_folder(folder_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if not ok:
+            raise HTTPException(status_code=404, detail="folder not found")
+        return {"deleted": folder_id}
+
+    @app.post("/folders/{folder_id}/resync")
+    async def resync_folder(folder_id: int, user: AuthenticatedUser = Depends(require_admin)):
+        f = store.get_folder(folder_id)
+        if f is None:
+            raise HTTPException(status_code=404, detail="folder not found")
+        if f.origin != "folder" or not f.location:
+            raise HTTPException(status_code=400, detail="only filesystem-synced folders resync")
+        if not Path(f.location).is_dir():
             raise HTTPException(status_code=400,
-                detail=f"source path is not currently a directory: {location}")
+                detail=f"folder path is not currently a directory: {f.location}")
         report = await run_in_threadpool(
-            sync_folder, Path(location), store, max_chars=settings.chunk_max_chars,
+            sync_folder, Path(f.location), store, parent_id=f.parent_id,
+            max_chars=settings.chunk_max_chars,
             overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
-            max_doc_chars=settings.max_doc_chars,
-        )
+            max_doc_chars=settings.max_doc_chars)
         return {"report": {"added": report.added, "updated": report.updated,
                            "skipped": report.skipped, "removed": report.removed,
                            "failed": report.failed}}
@@ -461,7 +516,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
             index = dist / "index.html"
 
-            RESERVED = ("auth", "chat", "ingest", "documents", "sources", "me",
+            RESERVED = ("auth", "chat", "ingest", "documents", "folders", "me",
                         "users", "tokens", "settings",
                         "health", "openapi.json", "docs", "redoc", "assets", "mcp")
 
