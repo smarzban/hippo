@@ -1,26 +1,58 @@
 import { describe, expect, it } from "vitest";
-import { WIZARD_STEPS, nextStep, stepValid, type SetupState } from "./setup";
+import {
+  buildSetupPayload,
+  canSubmit,
+  fieldErrors,
+  type SetupState,
+} from "./setup";
 
 const base: SetupState = {
-  step: 0, token: "", authMode: "password", ownerEmail: "", ownerPassword: "",
-  roots: { user: "Default", admin: "Private", owner: "Owner" },
+  token: "",
+  authMode: "password",
+  ownerEmail: "",
+  ownerPassword: "",
   models: { chat_model: "", embedding_model: "", embedding_dim: 1536 },
 };
 
-describe("wizard", () => {
-  it("has the expected ordered steps", () => {
-    expect(WIZARD_STEPS).toEqual(["token", "auth", "owner", "roots", "models", "finish"]);
+describe("setup form", () => {
+  it("requires token, valid email, and an 8-char password in password mode", () => {
+    expect(canSubmit(base)).toBe(false);
+    expect(
+      canSubmit({ ...base, token: "t", ownerEmail: "o@x.com", ownerPassword: "longenough" }),
+    ).toBe(true);
+    expect(
+      canSubmit({ ...base, token: "t", ownerEmail: "o@x.com", ownerPassword: "short" }),
+    ).toBe(false);
+    expect(
+      canSubmit({ ...base, token: "t", ownerEmail: "nope", ownerPassword: "longenough" }),
+    ).toBe(false);
   });
-  it("token step needs a token", () => {
-    expect(stepValid({ ...base, step: 0, token: "" })).toBe(false);
-    expect(stepValid({ ...base, step: 0, token: "abc" })).toBe(true);
+
+  it("does not require a password in oidc/iap mode", () => {
+    expect(canSubmit({ ...base, token: "t", ownerEmail: "o@x.com", authMode: "oidc" })).toBe(true);
   });
-  it("password owner step needs email + 8-char password", () => {
-    expect(stepValid({ ...base, step: 2, ownerEmail: "o@x.com", ownerPassword: "short" })).toBe(false);
-    expect(stepValid({ ...base, step: 2, ownerEmail: "o@x.com", ownerPassword: "longenough" })).toBe(true);
+
+  it("flags a malformed email only once it has been typed", () => {
+    expect(fieldErrors(base).email).toBeUndefined();
+    expect(fieldErrors({ ...base, ownerEmail: "nope" }).email).toBeTruthy();
+    expect(fieldErrors({ ...base, ownerEmail: "o@x.com" }).email).toBeUndefined();
   });
-  it("nextStep advances but clamps at the last step", () => {
-    expect(nextStep({ ...base, step: 0, token: "abc" }).step).toBe(1);
-    expect(nextStep({ ...base, step: 5 }).step).toBe(5);
+
+  it("flags a short password only once it has been typed", () => {
+    expect(fieldErrors(base).password).toBeUndefined();
+    expect(fieldErrors({ ...base, ownerPassword: "short" }).password).toBeTruthy();
+    expect(fieldErrors({ ...base, ownerPassword: "longenough" }).password).toBeUndefined();
+  });
+
+  it("payload omits the dropped folder step", () => {
+    const p = buildSetupPayload({
+      ...base,
+      token: "t",
+      ownerEmail: "o@x.com",
+      ownerPassword: "longenough",
+    });
+    expect(p).not.toHaveProperty("roots");
+    expect(p.owner_email).toBe("o@x.com");
+    expect(p.auth_mode).toBe("password");
   });
 });

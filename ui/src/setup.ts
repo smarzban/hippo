@@ -1,40 +1,44 @@
-export const WIZARD_STEPS = ["token", "auth", "owner", "roots", "models", "finish"] as const;
 export const MIN_PASSWORD_LEN = 8;
 
 export type SetupState = {
-  step: number;
   token: string;
   authMode: "password" | "oidc" | "iap";
   ownerEmail: string;
   ownerPassword: string;
-  roots: { user: string; admin: string; owner: string };
   models: { chat_model: string; embedding_model: string; embedding_dim: number };
 };
 
 const emailish = (s: string) => /.+@.+\..+/.test(s);
 
-/** Per-step validity gate for the Next button. The server re-validates everything. */
-export function stepValid(s: SetupState): boolean {
-  switch (WIZARD_STEPS[s.step]) {
-    case "token": return s.token.trim().length > 0;
-    case "auth": return ["password", "oidc", "iap"].includes(s.authMode);
-    case "owner":
-      if (!emailish(s.ownerEmail)) return false;
-      return s.authMode !== "password" || s.ownerPassword.length >= MIN_PASSWORD_LEN;
-    case "roots": return !!(s.roots.user && s.roots.admin && s.roots.owner);
-    case "models": return true;   // names optional; server falls back to env defaults
-    default: return true;
-  }
+/**
+ * Per-field inline messages. A field only errors once it has content — empty
+ * required fields stay quiet until submit is attempted (canSubmit gates that),
+ * so the form doesn't scream before the user has typed anything.
+ */
+export function fieldErrors(s: SetupState): { email?: string; password?: string } {
+  const e: { email?: string; password?: string } = {};
+  if (s.ownerEmail && !emailish(s.ownerEmail)) e.email = "Enter a valid email address";
+  if (s.authMode === "password" && s.ownerPassword && s.ownerPassword.length < MIN_PASSWORD_LEN)
+    e.password = `Password must be at least ${MIN_PASSWORD_LEN} characters`;
+  return e;
 }
 
-export function nextStep(s: SetupState): SetupState {
-  if (!stepValid(s)) return s;
-  return { ...s, step: Math.min(s.step + 1, WIZARD_STEPS.length - 1) };
+/** Whether the single-page form may be submitted. The server re-validates everything. */
+export function canSubmit(s: SetupState): boolean {
+  if (s.token.trim().length === 0) return false;
+  if (!emailish(s.ownerEmail)) return false;
+  if (s.authMode === "password" && s.ownerPassword.length < MIN_PASSWORD_LEN) return false;
+  return true;
 }
 
 export function buildSetupPayload(s: SetupState) {
+  // No `roots`: folder naming moved out of first-run setup into Settings → Folders,
+  // so the three seeded roots keep their defaults (Default / Private / Owner).
   return {
-    token: s.token, auth_mode: s.authMode, owner_email: s.ownerEmail,
-    owner_password: s.ownerPassword, roots: s.roots, models: s.models,
+    token: s.token,
+    auth_mode: s.authMode,
+    owner_email: s.ownerEmail,
+    owner_password: s.ownerPassword,
+    models: s.models,
   };
 }

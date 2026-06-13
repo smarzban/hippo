@@ -46,7 +46,7 @@ def test_iap_mode_rejects_without_assertion(tmp_path):
         key, algorithm="ES256", headers={"kid": "k1"})
     r = c.get("/me", headers={"x-goog-iap-jwt-assertion": assertion})
     assert r.status_code == 200 and r.json() == {
-        "email": "dev@x.com", "role": "user", "auth_mode": "iap"}
+        "email": "dev@x.com", "role": "user", "auth_mode": "iap", "name": ""}
 
 
 def test_domain_gate_403(tmp_path):
