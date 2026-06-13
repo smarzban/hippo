@@ -26,13 +26,19 @@ def check_domain(email: str, allowed_domain: str) -> None:
         raise AuthError(f"only {allowed_domain} accounts are allowed")
 
 
-def resolve_role(store: "Storage", settings: "Settings", email: str) -> str:
+def resolve_role(store: "Storage", settings: "Settings", email: str,
+                 *, allowed_domain: str | None = None) -> str:
     """Canonical identity → role: normalize, enforce the domain gate, ensure the
     user row (first-timers default to 'user'), then apply the admin-email
     bootstrap. Raises AuthError if the email is out of the allowed domain. Shared
-    by the HTTP bearer path (api.py) and the Slack bot."""
+    by the HTTP bearer path (api.py) and the Slack bot.
+
+    allowed_domain lets the caller pass the EFFECTIVE domain (e.g. a DB-overlay
+    value); None means "use settings.allowed_domain". Default None preserves the
+    Slack bot's settings-only call."""
     email = email.strip().lower()
-    check_domain(email, settings.allowed_domain)  # raises AuthError
+    dom = settings.allowed_domain if allowed_domain is None else allowed_domain
+    check_domain(email, dom)  # raises AuthError
     role = store.ensure_user(email)
     if email in settings.admin_email_list:
         role = "owner"  # env bootstrap is the top tier (spec §3)

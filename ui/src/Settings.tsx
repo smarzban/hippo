@@ -5,7 +5,10 @@ import { passwordChangeError } from "./auth";
 type Role = "user" | "admin" | "owner";
 
 export function tabsForRole(role: string): string[] {
-  return role === "user" ? ["Tokens"] : ["Folders", "Users", "Tokens", "Status"];
+  if (role === "user") return ["Tokens"];
+  const tabs = ["Folders", "Users", "Tokens", "Status"];
+  if (role === "owner") tabs.push("Instance");
+  return tabs;
 }
 
 async function getJSON(url: string) {
@@ -37,6 +40,7 @@ export default function Settings({ role, authMode, onClose }: { role: Role; auth
       {tab === "Folders" && <FoldersPanel />}
       {tab === "Users" && <UsersPanel authMode={authMode} />}
       {tab === "Status" && <StatusPanel />}
+      {tab === "Instance" && <InstancePanel />}
     </div>
   );
 }
@@ -254,6 +258,37 @@ function StatusPanel() {
         <dt>Slack</dt><dd>{String(s.slack_enabled)}</dd>
         <dt>Counts</dt><dd>{s.counts.documents} docs · {s.counts.folders} folders · {s.counts.users} users</dd>
       </dl>
+    </div>
+  );
+}
+
+function InstancePanel() {
+  const [cfg, setCfg] = useState<Record<string, any> | null>(null);
+  const [note, setNote] = useState("");
+  useEffect(() => { getJSON("/config").then(setCfg).catch(() => setCfg(null)); }, []);
+  if (!cfg) return <div className="panel">Loading…</div>;
+  const save = async (patch: Record<string, any>) => {
+    const r = await fetch("/config", { method: "PUT",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    setNote(r.ok ? "saved (model changes are live; auth-mode/embedding need a restart)"
+                 : await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+    if (r.ok) getJSON("/config").then(setCfg);
+  };
+  return (
+    <div className="panel">
+      <div className="row"><label>Chat model</label>
+        <input defaultValue={cfg.chat_model}
+          onBlur={(e) => e.target.value !== cfg.chat_model && save({ chat_model: e.target.value })} /></div>
+      <div className="row"><label>Enrich model</label>
+        <input defaultValue={cfg.enrich_model}
+          onBlur={(e) => e.target.value !== cfg.enrich_model && save({ enrich_model: e.target.value })} /></div>
+      <div className="row"><label>Embedding</label>
+        <span className="sec">{cfg.embedding_model} / dim {cfg.embedding_dim} — change via <code>hippo reindex</code></span></div>
+      <div className="row"><label>Auth mode</label>
+        <select defaultValue={cfg.auth_mode} onChange={(e) => save({ auth_mode: e.target.value })}>
+          {["password", "oidc", "iap"].map((m) => <option key={m} value={m}>{m}</option>)}
+        </select></div>
+      <span className="note">{note}</span>
     </div>
   );
 }

@@ -52,6 +52,18 @@ def test_resolve_role_out_of_domain_raises(tmp_path):
     with pytest.raises(AuthError):
         resolve_role(store, settings, "outsider@gmail.com")
 
+
+def test_resolve_role_allowed_domain_override_gates(tmp_path):
+    # env has no domain restriction, but an explicit allowed_domain= kwarg
+    # (the DB overlay value, threaded by api.py) must gate role resolution.
+    store = _store(tmp_path)
+    settings = Settings(_env_file=None, allowed_domain="")  # env: any domain
+    # in-domain works
+    assert resolve_role(store, settings, "a@x.com", allowed_domain="x.com") == "user"
+    # out-of-domain is rejected by the override even though env allows any
+    with pytest.raises(AuthError):
+        resolve_role(store, settings, "a@y.com", allowed_domain="x.com")
+
 AUD = "/projects/1/global/backendServices/2"
 
 # Module-level RSA key — generated once (~100ms), reused by all google-id-token tests.

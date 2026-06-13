@@ -431,3 +431,28 @@ def test_lockout_after_max_failures_then_reset(store):
     creds = store.get_credentials("eve@x.com")
     assert creds["failed_logins"] == 0 and creds["locked_until"] is None
     assert store.is_locked("eve@x.com") is False
+
+
+def test_config_get_set_and_setup_flag(store):
+    assert store.get_config("chat_model") is None
+    store.set_config("chat_model", "openai:gpt-5.2")
+    assert store.get_config("chat_model") == "openai:gpt-5.2"
+    store.set_config("chat_model", "ollama:llama3")   # upsert
+    assert store.get_config("chat_model") == "ollama:llama3"
+    assert store.all_config()["chat_model"] == "ollama:llama3"
+    assert store.is_setup_complete() is False
+    store.mark_setup_complete()
+    assert store.is_setup_complete() is True
+
+
+def test_document_count(store):
+    assert store.document_count() == 0
+
+
+def test_claim_setup_is_atomic_once(store):
+    # First claim wins; every subsequent claim loses (idempotent flag already set).
+    assert store.is_setup_complete() is False
+    assert store.claim_setup() is True
+    assert store.is_setup_complete() is True
+    assert store.claim_setup() is False
+    assert store.claim_setup() is False

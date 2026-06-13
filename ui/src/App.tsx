@@ -14,8 +14,239 @@ import {
 } from "./citations";
 import Settings from "./Settings";
 import { flattenTree, writableFolders, uploadReducer, type Folder } from "./folders";
+import {
+  WIZARD_STEPS,
+  buildSetupPayload,
+  nextStep,
+  stepValid,
+  type SetupState,
+} from "./setup";
 
 type OpenDoc = { id: number; section: string };
+
+const INIT_SETUP: SetupState = {
+  step: 0,
+  token: "",
+  authMode: "password",
+  ownerEmail: "",
+  ownerPassword: "",
+  roots: { user: "Default", admin: "Private", owner: "Owner" },
+  models: { chat_model: "", embedding_model: "", embedding_dim: 1536 },
+};
+
+function SetupWizard() {
+  const [state, setState] = useState<SetupState>(INIT_SETUP);
+  const [submitErr, setSubmitErr] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const step = WIZARD_STEPS[state.step];
+  const isFirst = state.step === 0;
+  const isLast = state.step === WIZARD_STEPS.length - 1;
+  const canNext = stepValid(state);
+
+  function back() {
+    if (state.step > 0) setState((s) => ({ ...s, step: s.step - 1 }));
+  }
+
+  function advance() {
+    setState((s) => nextStep(s));
+  }
+
+  async function finish() {
+    setSubmitErr("");
+    setSubmitting(true);
+    try {
+      const r = await fetch("/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildSetupPayload(state)),
+      });
+      if (r.ok) {
+        window.location.reload();
+      } else {
+        const b = await r.json().catch(() => ({}));
+        setSubmitErr(b.detail || `Setup failed (${r.status})`);
+        setSubmitting(false);
+      }
+    } catch {
+      setSubmitErr("Network error — is the server running?");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="app">
+      <div className="empty signin">
+        <span className="logo">{"\u{1F99B}"}</span>
+        <h1>Hippo — First-run Setup</h1>
+        <p className="tagline">
+          Step {state.step + 1} of {WIZARD_STEPS.length}: <strong>{step}</strong>
+        </p>
+
+        <div style={{ width: "100%", maxWidth: 420, textAlign: "left" }}>
+          {step === "token" && (
+            <div>
+              <p>Enter the setup token (from <code>HIPPO_SETUP_TOKEN</code> env or logged at startup).</p>
+              <input
+                type="text"
+                placeholder="Setup token"
+                value={state.token}
+                autoFocus
+                style={{ width: "100%", marginBottom: 8 }}
+                onChange={(e) => setState((s) => ({ ...s, token: e.target.value }))}
+              />
+            </div>
+          )}
+
+          {step === "auth" && (
+            <div>
+              <p>Choose the authentication mode for this Hippo instance.</p>
+              <select
+                value={state.authMode}
+                style={{ width: "100%", marginBottom: 8 }}
+                onChange={(e) =>
+                  setState((s) => ({ ...s, authMode: e.target.value as SetupState["authMode"] }))
+                }
+              >
+                <option value="password">Password (email + password)</option>
+                <option value="oidc">OIDC / Google (OAuth2)</option>
+                <option value="iap">IAP (Google Cloud Identity-Aware Proxy)</option>
+              </select>
+            </div>
+          )}
+
+          {step === "owner" && (
+            <div>
+              <p>Create the owner account.</p>
+              <input
+                type="email"
+                placeholder="Owner email"
+                value={state.ownerEmail}
+                autoFocus
+                style={{ width: "100%", marginBottom: 8 }}
+                onChange={(e) => setState((s) => ({ ...s, ownerEmail: e.target.value }))}
+              />
+              {state.authMode === "password" && (
+                <input
+                  type="password"
+                  placeholder="Owner password (min 8 chars)"
+                  value={state.ownerPassword}
+                  style={{ width: "100%", marginBottom: 8 }}
+                  onChange={(e) => setState((s) => ({ ...s, ownerPassword: e.target.value }))}
+                />
+              )}
+            </div>
+          )}
+
+          {step === "roots" && (
+            <div>
+              <p>Name the three access-tier root folders.</p>
+              {(["user", "admin", "owner"] as const).map((tier) => (
+                <div key={tier} style={{ marginBottom: 8 }}>
+                  <label style={{ display: "block", fontWeight: 600, marginBottom: 2 }}>
+                    {tier} tier
+                  </label>
+                  <input
+                    type="text"
+                    value={state.roots[tier]}
+                    style={{ width: "100%" }}
+                    onChange={(e) =>
+                      setState((s) => ({ ...s, roots: { ...s.roots, [tier]: e.target.value } }))
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {step === "models" && (
+            <div>
+              <p>Configure models (optional — leave blank to use server defaults).</p>
+              <div style={{ marginBottom: 8 }}>
+                <label style={{ display: "block", fontWeight: 600, marginBottom: 2 }}>
+                  Chat model
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. ollama:llama3 or openai:gpt-4o"
+                  value={state.models.chat_model}
+                  style={{ width: "100%" }}
+                  onChange={(e) =>
+                    setState((s) => ({ ...s, models: { ...s.models, chat_model: e.target.value } }))
+                  }
+                />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <label style={{ display: "block", fontWeight: 600, marginBottom: 2 }}>
+                  Embedding model
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. openai:text-embedding-3-small"
+                  value={state.models.embedding_model}
+                  style={{ width: "100%" }}
+                  onChange={(e) =>
+                    setState((s) => ({
+                      ...s,
+                      models: { ...s.models, embedding_model: e.target.value },
+                    }))
+                  }
+                />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <label style={{ display: "block", fontWeight: 600, marginBottom: 2 }}>
+                  Embedding dimension
+                </label>
+                <input
+                  type="number"
+                  value={state.models.embedding_dim}
+                  style={{ width: "100%" }}
+                  onChange={(e) =>
+                    setState((s) => ({
+                      ...s,
+                      models: { ...s.models, embedding_dim: Number(e.target.value) },
+                    }))
+                  }
+                />
+              </div>
+            </div>
+          )}
+
+          {step === "finish" && (
+            <div>
+              <p>Everything looks good. Click <strong>Finish</strong> to complete setup.</p>
+              <ul style={{ marginBottom: 8 }}>
+                <li>Auth mode: <strong>{state.authMode}</strong></li>
+                <li>Owner: <strong>{state.ownerEmail}</strong></li>
+                <li>Folders: {state.roots.user} / {state.roots.admin} / {state.roots.owner}</li>
+              </ul>
+            </div>
+          )}
+
+          {submitErr && <p className="error">{submitErr}</p>}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            {!isFirst && (
+              <button className="upload-btn" onClick={back} disabled={submitting}>
+                Back
+              </button>
+            )}
+            {!isLast && (
+              <button className="upload-btn" onClick={advance} disabled={!canNext}>
+                Next
+              </button>
+            )}
+            {isLast && (
+              <button className="upload-btn" onClick={finish} disabled={submitting}>
+                {submitting ? "Setting up…" : "Finish"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 type Me = { email: string; role: string; auth_mode: string };
 
@@ -129,6 +360,7 @@ export default function App() {
   const [openDoc, setOpenDoc] = useState<OpenDoc | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [needsLogin, setNeedsLogin] = useState(false);
+  const [setupComplete, setSetupComplete] = useState<boolean | null>(null);
   const [view, setView] = useState<"chat" | "settings">("chat");
   const [folders, setFolders] = useState<Folder[]>([]);
   const [showUpload, setShowUpload] = useState(false);
@@ -141,6 +373,13 @@ export default function App() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPw, setLoginPw] = useState("");
   const [loginErr, setLoginErr] = useState("");
+
+  useEffect(() => {
+    fetch("/setup/status")
+      .then((r) => r.json())
+      .then((s) => setSetupComplete(s.setup_complete === true))
+      .catch(() => setSetupComplete(true)); // if endpoint absent, assume complete
+  }, []);
 
   const refreshDocs = useCallback(() => {
     fetch("/documents")
@@ -202,6 +441,11 @@ export default function App() {
     // server ingests into every destination; advance the bar to done
     for (let i = 0; i < picked.length; i++) dispatchUp({ type: "progress" });
     refreshDocs();
+  }
+
+  // Setup wizard takes precedence over the login screen.
+  if (setupComplete === false) {
+    return <SetupWizard />;
   }
 
   if (needsLogin) {

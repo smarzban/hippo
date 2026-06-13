@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS tokens (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_used_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 # (name, min_role) for the three seeded roots; origin defaults to 'manual'.
