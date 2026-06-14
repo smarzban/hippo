@@ -105,7 +105,8 @@ storage/       Storage(con, embedder): ALL SQL lives in this package. Decomposed
 `ui/` — Vite + React 19 + `@ai-sdk/react` v2 `useChat` + `DefaultChatTransport({api:"/chat"})`.
 Vite dev-server proxies /chat,/ingest,/documents,/folders,/users,/tokens,/settings,/config,/setup,/me,/auth to :8000. Tool parts render as progress lines.
 `Settings.tsx` — gear-toggle Settings view; role-gated tabs via tabsForRole(role): user → My Profile only; admin → Folders/Users/My Profile/Status; owner adds System config. Tokens + self-service password change live inside the My Profile tab. Folders tab shows the full tree with Rename/Re-sync/Delete actions.
-`App.tsx` — "Add doc" button opens a modal with file picker + multi-destination folder checkboxes (writableFolders from folders.ts); posts folder_ids to /ingest.
+`App.tsx` — orchestrator: owns the useChat/auth/folders/upload state + effects and the header, then routes to one of the extracted components below (LOW-02 split it from a ~580-line god-component down to ~190 lines of wiring). The "Add doc" button opens the upload modal (multi-destination folder checkboxes from writableFolders); posts folder_ids to /ingest.
+`SetupWizard.tsx` — first-run wizard (self-contained: POST /setup + reload). `LoginScreen.tsx` — password/oidc sign-in screen (props). `UploadModal.tsx` — file picker + writable-folder checkboxes + progress (props). `ChatView.tsx` — chat surface + composer (carries toolLabel + SUGGESTIONS; renders AssistantText). `AssistantText.tsx` — one assistant message: markdown + citation refs + Sources list + no-sources advisory.
 `folders.ts` — pure helpers: Folder type, flattenTree, writableFolders (filters to manual+writable), uploadReducer. Vitest-covered across the folders/setup/citations/auth/settings suites.
 Token secret shown once after POST; list views show metadata only.
 
