@@ -538,9 +538,11 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             if res.status == "failed":
                 raise HTTPException(status_code=422, detail=res.error)
             results.append({"path": res.path, "chunks": res.chunks})
-        # one document per destination folder
+        # one document per destination folder. `versioned` is retained as a constant
+        # False for API backward-compat (it was the now-removed upload-to-repo signal) —
+        # dropping the key could KeyError an existing headless client.
         return {"status": "added", "paths": [r["path"] for r in results],
-                "results": results}
+                "results": results, "versioned": False}
 
     @app.get("/documents")
     async def documents(query: str | None = None, user: AuthenticatedUser = Depends(verify_request)):

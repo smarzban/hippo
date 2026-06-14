@@ -128,7 +128,6 @@ Every signed-in user can access the Settings view via the gear (⚙) button in t
 
 API endpoints backing the SPA and headless clients: `GET /health`, `GET /me`, `PATCH /me`, `GET /auth/config`, `POST /auth/login`, `POST /auth/logout`, `POST /me/password`, `GET /documents`, `GET /documents/{id}`, `GET /users`, `POST /users` (admin create-user), `PUT /users/{email}/role`, `POST /users/{email}/password` (admin reset), `GET /tokens`, `POST /tokens`, `DELETE /tokens/{id}`, `GET /folders`, `POST /folders`, `PATCH /folders/{id}`, `DELETE /folders/{id}`, `POST /folders/{id}/resync`, `GET /settings/status`, `GET /setup/status`, `POST /setup`, `GET /config`, `PUT /config`.
 
-
 **Legacy database note:** SP1 (roles & folder model) introduced a new database schema with no migration. A pre-SP1 database (with `documents.source_id` and no `folders` table) is rejected on startup with a clear "recreate the database" error. Delete the old `.db` file and re-sync your content.
 
 ## CLI

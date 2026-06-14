@@ -261,7 +261,8 @@ def test_ingest_uploads_a_document(tmp_path):
     r = c.post("/ingest", files={"file": ("n.md", b"# N\n\nbody")},
                data={"folder_ids": [str(fid)]})
     assert r.status_code == 200
-    assert r.json()["status"] == "added"
+    # `versioned` is retained (constant False) for headless-client API back-compat
+    assert r.json()["status"] == "added" and r.json()["versioned"] is False
 
 
 def test_ingest_filename_sanitized(tmp_path):
