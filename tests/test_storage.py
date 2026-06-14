@@ -347,16 +347,16 @@ def test_fts_candidates_are_role_filtered(store):
 
 def test_grep_rejects_overlong_pattern(store):
     import pytest
-    from hippo import storage
+    from hippo.storage import search  # grep tuning constants live with grep (LOW-01 split)
     _add_doc(store, "a.md", "hello world")
     with pytest.raises(ValueError, match="too long"):
-        store.grep("x" * (storage.GREP_MAX_PATTERN + 1), role="owner")
+        store.grep("x" * (search.GREP_MAX_PATTERN + 1), role="owner")
 
 
 def test_grep_times_out_on_catastrophic_pattern(store, monkeypatch):
     import time, pytest
-    from hippo import storage
-    monkeypatch.setattr(storage, "GREP_TIMEOUT_S", 0.2)
+    from hippo.storage import search  # grep tuning constants live with grep (LOW-01 split)
+    monkeypatch.setattr(search, "GREP_TIMEOUT_S", 0.2)
     # a chunk that triggers catastrophic backtracking for (a|aa)+$
     _add_doc(store, "evil.md", "a" * 50 + "!")
     t0 = time.monotonic()
@@ -373,8 +373,8 @@ def test_grep_normal_pattern_still_matches(store):
 
 def test_grep_whole_operation_time_budget(store, monkeypatch):
     import time
-    from hippo import storage
-    monkeypatch.setattr(storage, "GREP_TIMEOUT_S", 0.3)
+    from hippo.storage import search  # grep tuning constants live with grep (LOW-01 split)
+    monkeypatch.setattr(search, "GREP_TIMEOUT_S", 0.3)
     # many chunks that each backtrack a little; aggregate must stay bounded by the
     # whole-operation budget, not budget-per-chunk.
     for i in range(20):
@@ -585,8 +585,8 @@ def test_grep_caps_chunks_scanned(store, monkeypatch, caplog):
     """MED-16: grep bounds how many chunks it materializes/scans, and logs (doesn't
     silently truncate) when the cap is reached."""
     import logging
-    import hippo.storage as storage_mod
-    monkeypatch.setattr(storage_mod, "GREP_MAX_CHUNKS", 2)
+    from hippo.storage import search  # grep tuning constants live with grep (LOW-01 split)
+    monkeypatch.setattr(search, "GREP_MAX_CHUNKS", 2)
     for i in range(5):
         _add(store, f"d{i}.md", f"needle {i}", _user_root_id(store), chash=f"d{i}")
     with caplog.at_level(logging.WARNING, logger="hippo.storage"):
