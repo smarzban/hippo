@@ -21,11 +21,11 @@ log = logging.getLogger("hippo.storage")
 @dataclass
 class Document:
     id: int
-    source_type: str
+    source_type: str        # stored + forward-compat; not read off a returned Document (INF-05/08)
     path: str
     title: str
     content: str
-    content_hash: str
+    content_hash: str       # dedup compares it via is_unchanged()/SQL, not off the instance
     summary: str | None
 
 
@@ -57,7 +57,7 @@ class Folder:
     parent_id: int | None
     name: str
     min_role: str
-    origin: str          # manual | folder | repo
+    origin: str          # manual | folder
     location: str | None
     doc_count: int
 
@@ -667,10 +667,6 @@ class Storage:
                 (key, value),
             )
 
-    def all_config(self) -> dict[str, str]:
-        with self._lock:
-            return {k: v for k, v in self.con.execute("SELECT key, value FROM config")}
-
     def is_setup_complete(self) -> bool:
         return self.get_config(self.SETUP_COMPLETE_KEY) == "1"
 
@@ -787,7 +783,13 @@ class Storage:
         Embeds everything BEFORE destroying the old index, so a mid-run failure
         (bad key, rate limit, wrong dimension) leaves the existing vectors intact.
         The destroy+repopulate+stamp happens in a single transaction only after
-        all embeddings succeed. Returns the number of chunks re-embedded."""
+        all embeddings succeed. Returns the number of chunks re-embedded.
+
+        A concurrent ingest through THIS Storage is serialized by self._lock and the
+        (id, text) re-check below aborts if the chunk set changed (MED-06). Across
+        PROCESSES, though (e.g. `hippo reindex` CLI while `hippo serve` is ingesting),
+        the two connections have independent locks — run reindex with no concurrent
+        sync/upload to be safe (INF-06)."""
         with self._lock:
             rows = self.con.execute("SELECT id, text FROM chunks ORDER BY id").fetchall()
         new_vectors: list[tuple[int, bytes]] = []

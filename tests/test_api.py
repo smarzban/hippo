@@ -88,10 +88,10 @@ def test_ingest_with_enrichment_enabled(tmp_path, monkeypatch):
 def test_usage_limits_caps_tool_calls_not_just_requests():
     """M4: the cap must bound tool calls (the documented ~15 knob), with a
     generous request_limit backstop — not the other way around."""
-    from hippo.api import _usage_limits
+    from hippo.agent import usage_limits
 
     s = Settings(_env_file=None, max_tool_calls=7)
-    ul = _usage_limits(s)
+    ul = usage_limits(s)
     assert ul.tool_calls_limit == 7
     assert ul.request_limit is not None and ul.request_limit > 7
 
@@ -212,7 +212,7 @@ def test_ingest_docx_via_api_fallback(tmp_path):
                data={"folder_ids": [str(fid)]})
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "added" and body["versioned"] is False
+    assert body["status"] == "added"
 
 
 def test_mcp_requires_token(tmp_path):

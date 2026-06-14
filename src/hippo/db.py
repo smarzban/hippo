@@ -11,8 +11,8 @@ CREATE TABLE IF NOT EXISTS folders (
     parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,  -- NULL = a root
     name TEXT NOT NULL,
     min_role TEXT NOT NULL CHECK (min_role IN ('user','admin','owner')),
-    origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual','folder','repo')),
-    location TEXT,                       -- fs path / owner/repo; NULL for manual
+    origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual','folder')),
+    location TEXT,                       -- filesystem path for 'folder' origin; NULL for 'manual'
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(parent_id, name)
 );
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS folders (
 -- as distinct), so enforce unique root names explicitly.
 CREATE UNIQUE INDEX IF NOT EXISTS folders_root_name
     ON folders(name) WHERE parent_id IS NULL;
--- A mounted filesystem path / repo maps to exactly one folder: enforce unique
+-- A mounted filesystem path maps to exactly one folder: enforce unique
 -- non-null location so a second mount of the same path can't create an ambiguous
 -- duplicate that sync would then populate into the wrong (older) folder row.
 CREATE UNIQUE INDEX IF NOT EXISTS folders_location
@@ -29,7 +29,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS folders_location
 CREATE TABLE IF NOT EXISTS documents (
     id INTEGER PRIMARY KEY,
     folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
-    source_type TEXT NOT NULL,            -- folder | upload | repo
+    source_type TEXT NOT NULL,            -- folder | upload
     path TEXT NOT NULL UNIQUE,            -- citation key (folder-qualified for uploads)
     title TEXT NOT NULL,
     content TEXT NOT NULL,                -- canonical markdown

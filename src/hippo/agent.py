@@ -3,11 +3,23 @@ import re
 from dataclasses import dataclass
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.usage import UsageLimits
 
 from .storage import Storage
-from .tool_io import NO_SOURCES_MARKER, as_untrusted_data, clamp_top_k
+from .tool_io import (NO_SOURCES_MARKER, as_untrusted_data, clamp_top_k,
+                      shape_doc_full, shape_doc_meta, shape_grep_hit, shape_search_hit)
 
 log = logging.getLogger("hippo.agent")
+
+
+def usage_limits(settings) -> UsageLimits:
+    """Cap the agent's *tool calls* (ADR D9's ~15 research budget). request_limit bounds
+    model requests (one request can emit several tool calls) — a generous backstop, not
+    the real cap. Shared by the HTTP /chat path and the Slack bot so the budget lives once."""
+    return UsageLimits(
+        tool_calls_limit=settings.max_tool_calls,
+        request_limit=settings.max_tool_calls + 5,
+    )
 
 # A grounded answer cites at least one source as [path > section]; an answer the
 # knowledge base can't support ends with the no-sources marker. Replies shorter than
@@ -85,16 +97,7 @@ def build_agent(model) -> Agent[HubDeps, str]:
         every question; vary the phrasing across calls if results look incomplete.
         """
         hits = ctx.deps.store.search_hybrid(query, top_k=clamp_top_k(top_k), role=ctx.deps.role)
-        return [
-            {
-                "doc_id": h.document_id,
-                "path": h.path,
-                "title": h.title,
-                "section": h.heading_path,
-                "text": _as_data(h.text),
-            }
-            for h in hits
-        ]
+        return [shape_search_hit(h) for h in hits]
 
     @agent.tool
     def read_document(ctx: RunContext[HubDeps], doc_id: int) -> dict:
@@ -106,7 +109,7 @@ def build_agent(model) -> Agent[HubDeps, str]:
         doc = ctx.deps.store.get_document(doc_id, role=ctx.deps.role)
         if doc is None:
             return {"error": f"no document with id {doc_id}"}
-        return {"doc_id": doc.id, "path": doc.path, "title": doc.title, "content": _as_data(doc.content)}
+        return shape_doc_full(doc)
 
     @agent.tool
     def list_documents(ctx: RunContext[HubDeps], query: str | None = None) -> list[dict]:
@@ -114,14 +117,9 @@ def build_agent(model) -> Agent[HubDeps, str]:
 
         Use this to discover which documents exist about a topic before deep-diving.
         """
-        # path/title stay raw (they are the citation identifiers the model echoes);
-        # the free-text summary is document-derived, so frame it as untrusted data too.
         # list_document_meta avoids reading every doc's full content just to list them.
-        return [
-            {"doc_id": d.id, "path": d.path, "title": d.title,
-             "summary": _as_data(d.summary) if d.summary else ""}
-            for d in ctx.deps.store.list_document_meta(query=query, role=ctx.deps.role)
-        ]
+        return [shape_doc_meta(d) for d in
+                ctx.deps.store.list_document_meta(query=query, role=ctx.deps.role)]
 
     @agent.tool
     def grep(ctx: RunContext[HubDeps], pattern: str) -> list[dict]:
@@ -134,10 +132,7 @@ def build_agent(model) -> Agent[HubDeps, str]:
             hits = ctx.deps.store.grep(pattern, role=ctx.deps.role)
         except ValueError as e:
             return [{"error": str(e)}]
-        return [
-            {"doc_id": h.document_id, "path": h.path, "section": h.heading_path, "text": _as_data(h.text)}
-            for h in hits
-        ]
+        return [shape_grep_hit(h) for h in hits]
 
     @agent.output_validator
     def _flag_ungrounded(ctx: RunContext[HubDeps], text: str) -> str:

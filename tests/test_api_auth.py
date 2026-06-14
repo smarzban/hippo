@@ -254,14 +254,14 @@ def test_folder_access_hides_higher_tier_from_user(tmp_path):
     assert "Owner" not in dev_folders
 
 
-def test_ingest_falls_back_to_direct_without_github(tmp_path):
-    app = build_app(_settings(tmp_path))  # none mode, no github config
+def test_ingest_uploads_a_document(tmp_path):
+    app = build_app(_settings(tmp_path))  # none mode
     c = TestClient(app)
     fid = next(r["id"] for r in c.get("/folders").json() if r["name"] == "Default")
     r = c.post("/ingest", files={"file": ("n.md", b"# N\n\nbody")},
                data={"folder_ids": [str(fid)]})
     assert r.status_code == 200
-    assert r.json()["status"] == "added" and r.json()["versioned"] is False
+    assert r.json()["status"] == "added"
 
 
 def test_ingest_filename_sanitized(tmp_path):
@@ -286,7 +286,7 @@ def test_ingest_docx_via_api_fallback(tmp_path):
                data={"folder_ids": [str(fid)]})
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "added" and body["versioned"] is False
+    assert body["status"] == "added"
 
 
 def test_resync_missing_folder_does_not_wipe(tmp_path):
