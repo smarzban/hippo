@@ -19,11 +19,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
-from pydantic_ai.usage import UsageLimits
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse, RedirectResponse
 
-from .agent import HubDeps, build_agent
+from .agent import HubDeps, build_agent, usage_limits
 from .mcp_server import _mcp_role, build_mcp_server
 from .auth import (AuthError, AuthenticatedUser, IapVerifier, check_domain,
                    hash_password, resolve_role, safe_log, validate_google_id_token,
@@ -32,9 +31,8 @@ from .config import Settings
 from .db import connect
 from .embeddings import build_embedder
 from .enrich import Enricher
-from .github import GitHubContentsClient, GitHubError
 from .ingest import Ingestor, sync_folder
-from .roles import rank
+from .roles import VALID_ROLES, can_write, rank
 from .storage import Storage
 
 
@@ -42,9 +40,8 @@ _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def _safe_filename(name: str) -> str:
-    """Reduce an upload filename to a safe, URL-clean basename. Path-stripped by
-    the caller; this removes query/fragment/space chars that would corrupt the
-    GitHub Contents API URL or the repo path."""
+    """Reduce an upload filename to a safe, clean basename for the document path.
+    Path-stripped by the caller; this removes query/fragment/space chars."""
     base = Path(name).name  # strip any path components
     cleaned = _SAFE_NAME.sub("_", base).strip("._") or "upload"
     return cleaned
@@ -87,7 +84,7 @@ class _McpBearerAuth:
 class FolderIn(BaseModel):
     parent_id: int
     name: str
-    origin: Literal["manual", "folder", "repo"] = "manual"
+    origin: Literal["manual", "folder"] = "manual"
     location: str | None = None
 
 
@@ -119,18 +116,7 @@ MAX_NAME_LEN = 100
 # Reject multiple @, empty local/domain labels, and trailing dots (e.g. a@b@c.com,
 # a@.com, a@b.). Not RFC-perfect — a sanity gate so we never create a login identity
 # that can't be typed back. Single @, non-empty local, dotted non-empty domain labels.
-import re as _re
-_EMAIL_RE = _re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
-
-
-def _usage_limits(settings: Settings) -> UsageLimits:
-    """Cap the agent's *tool calls* (ADR D9's ~15 research budget). request_limit
-    bounds model requests, not tool calls — one request can emit several — so it
-    only serves as a generous backstop here."""
-    return UsageLimits(
-        tool_calls_limit=settings.max_tool_calls,
-        request_limit=settings.max_tool_calls + 5,
-    )
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 
 def _exchange_code_with_google(code: str, settings: Settings, *,
@@ -151,8 +137,7 @@ def _exchange_code_with_google(code: str, settings: Settings, *,
 
 
 def build_app(settings: Settings | None = None, model_override=None, *,
-              iap_verifier=None, code_exchanger=None, google_key_fetcher=None,
-              github_factory=None) -> FastAPI:
+              iap_verifier=None, code_exchanger=None, google_key_fetcher=None) -> FastAPI:
     settings = settings or Settings()
     # Ensure hippo's logs survive a direct ASGI launch (uvicorn 'hippo.api:build_app'
     # --factory, gunicorn, etc.), not only `hippo serve` (LOW-21). Idempotent: add a
@@ -215,9 +200,6 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             agent_cache.update(model=m, agent=build_agent(m))
         return agent_cache["agent"]
 
-    github_factory = github_factory or (
-        lambda repo: GitHubContentsClient(repo, settings.github_token, settings.github_branch))
-
     mcp_server_obj = build_mcp_server(store, require_auth=True) if settings.mcp_enabled else None
     lifespan = None
     if mcp_server_obj is not None:
@@ -246,6 +228,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     # secret_key, an unused session cookie is mounted — harmless. Starlette applies
     # middleware in reverse-add order; a single up-front add is fine.
     if settings.secret_key:
+        # The session cookie's Secure flag follows public_url's scheme. Behind a
+        # TLS-terminating proxy that forwards plain HTTP, set HIPPO_PUBLIC_URL to the
+        # external https:// base (also required for oidc) so the cookie is Secure and
+        # can't leak over the internal hop (LOW-37); the http default is dev-only.
         app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
                            https_only=public_url.startswith("https"),
                            same_site="lax")
@@ -519,14 +505,13 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     async def chat(request: Request, user: AuthenticatedUser = Depends(verify_request)):
         deps = HubDeps(store=store, role=user.role)
         return await VercelAIAdapter.dispatch_request(
-            request, agent=_live_agent(), deps=deps, usage_limits=_usage_limits(settings)
+            request, agent=_live_agent(), deps=deps, usage_limits=usage_limits(settings)
         )
 
     @app.post("/ingest")
     async def ingest(request: Request, file: UploadFile,
                      folder_ids: list[int] = Form(...),
                      user: AuthenticatedUser = Depends(verify_request)):
-        from .roles import can_write
         cl = request.headers.get("content-length")
         if cl and cl.isdigit() and int(cl) > settings.max_upload_bytes:
             raise HTTPException(status_code=413, detail="file too large")
@@ -553,7 +538,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             if res.status == "failed":
                 raise HTTPException(status_code=422, detail=res.error)
             results.append({"path": res.path, "chunks": res.chunks})
-        # one document per destination folder
+        # one document per destination folder. `versioned` is retained as a constant
+        # False for API backward-compat (it was the now-removed upload-to-repo signal) —
+        # dropping the key could KeyError an existing headless client.
         return {"status": "added", "paths": [r["path"] for r in results],
                 "results": results, "versioned": False}
 
@@ -573,7 +560,6 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.get("/folders")
     async def folders(user: AuthenticatedUser = Depends(verify_request)):
-        from .roles import can_write
         return [
             {"id": f.id, "parent_id": f.parent_id, "name": f.name, "tier": f.min_role,
              "origin": f.origin, "doc_count": f.doc_count,
@@ -599,33 +585,27 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.post("/folders")
     async def create_folder(body: FolderIn, user: AuthenticatedUser = Depends(require_admin)):
-        from .roles import rank as _rank
         parent = store.get_folder(body.parent_id)
         if parent is None:
             raise HTTPException(status_code=404, detail="parent folder not found")
-        if _rank(user.role) < _rank(parent.min_role):
+        if rank(user.role) < rank(parent.min_role):
             raise HTTPException(status_code=403, detail="cannot create a folder above your tier")
         try:
             if body.origin == "manual":
                 fid = store.create_folder(parent_id=body.parent_id, name=body.name)
-            else:
-                # mount a synced folder / repo, then sync it
+            else:  # "folder": mount a filesystem path, then sync it
                 if not body.location:
                     raise HTTPException(status_code=400, detail="location required for synced origin")
-                if body.origin == "folder":
-                    folder = _require_within_roots(body.location)
-                    if not folder.is_dir():
-                        raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
-                    fid = store.create_folder(parent_id=body.parent_id, name=body.name,
-                                              origin="folder", location=str(folder))
-                    await run_in_threadpool(
-                        sync_folder, folder, store, parent_id=body.parent_id,
-                        max_chars=settings.chunk_max_chars,
-                        overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
-                        max_doc_chars=settings.max_doc_chars)
-                else:  # repo
-                    fid = store.create_folder(parent_id=body.parent_id, name=body.name,
-                                              origin="repo", location=body.location)
+                folder = _require_within_roots(body.location)
+                if not folder.is_dir():
+                    raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
+                fid = store.create_folder(parent_id=body.parent_id, name=body.name,
+                                          origin="folder", location=str(folder))
+                await run_in_threadpool(
+                    sync_folder, folder, store, parent_id=body.parent_id,
+                    max_chars=settings.chunk_max_chars,
+                    overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
+                    max_doc_chars=settings.max_doc_chars)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         f = store.get_folder(fid)
@@ -708,8 +688,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
 
     @app.post("/users")
     async def create_user(body: CreateUserIn, user: AuthenticatedUser = Depends(require_admin)):
-        from .roles import VALID_ROLES
-        from .auth import check_domain, AuthError
+        from .auth import AuthError, check_domain
         target = body.email.strip().lower()
         if not _EMAIL_RE.match(target):
             raise HTTPException(status_code=400, detail="a valid email is required")
@@ -734,7 +713,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             check_domain(target, cfg.get("allowed_domain"))
         except AuthError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        resp: dict = {"email": target, "role": body.role}
+        # Echo the EFFECTIVE role (a HIPPO_ADMIN_EMAILS target resolves to owner), so the
+        # create response can't disagree with what the next /users list shows (INF-03).
+        resp: dict = {"email": target, "role": effective_role}
         # Atomic insert-only create: race-safe duplicate detection (409), no overwrite.
         if auth_mode == "password":
             new_pw = secrets.token_urlsafe(12)   # >= MIN_PASSWORD_LEN; shown once
@@ -755,15 +736,14 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     @app.put("/users/{email}/role")
     async def set_user_role(email: str, body: RoleIn,
                             user: AuthenticatedUser = Depends(require_admin)):
-        from .roles import VALID_ROLES, rank as _rank
         target = email.strip().lower()
         if body.role not in VALID_ROLES:
             raise HTTPException(status_code=400,
                 detail=f"invalid role {body.role!r}; expected one of {list(VALID_ROLES)}")
-        if _rank(body.role) > _rank(user.role):
+        if rank(body.role) > rank(user.role):
             raise HTTPException(status_code=403,
                 detail="you cannot grant a role above your own")
-        if target == user.email and _rank(body.role) < _rank(user.role):
+        if target == user.email and rank(body.role) < rank(user.role):
             raise HTTPException(status_code=400, detail="you can't lower your own role")
         # A HIPPO_ADMIN_EMAILS user is force-promoted by resolve_role every request,
         # so demoting them here is a no-op that would make /users lie. Refuse it.
@@ -805,6 +785,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         # role may understate their power. Using the stored role would let a rank-1
         # admin reset (and hijack/lock out) a bootstrap owner's local credential.
         target_role = "owner" if target in settings.admin_email_list else creds["role"]
+        # Strictly-greater: an admin may reset a SAME-tier peer admin's password by design
+        # (admins are mutually trusted at their tier). The guard only blocks reaching ABOVE
+        # one's tier (e.g. a rank-1 admin resetting a bootstrap owner) (INF-01).
         if rank(target_role) > rank(user.role):
             raise HTTPException(status_code=403, detail="cannot reset a user above your tier")
         new_pw = secrets.token_urlsafe(12)   # >= MIN_PASSWORD_LEN; shown once
@@ -938,10 +921,6 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             "embedding_model": cfg.get("embedding_model"),   # env-only (not DB-overridable)
             "embedding_dim": settings.embedding_dim,         # env-only; reported for the UI
             "setup_complete": store.is_setup_complete(),
-            "repos": {
-                "team": bool(settings.github_token and settings.github_docs_repo),
-                "managers": bool(settings.github_token and settings.github_managers_repo),
-            },
             "mcp_enabled": settings.mcp_enabled,
             "slack_enabled": settings.slack_enabled,
             "counts": {

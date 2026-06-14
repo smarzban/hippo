@@ -26,7 +26,7 @@ def can_read(caller_role: str, folder_min_role: str) -> bool:
 
 def can_write(caller_role: str, folder_min_role: str, origin: str) -> bool:
     """A caller may upload into a folder iff it is a manual folder AND their rank
-    is at least the folder's tier. Synced ('folder'/'repo') folders are pull-only."""
+    is at least the folder's tier. Synced ('folder') folders are pull-only."""
     return origin == "manual" and rank(caller_role) >= rank(folder_min_role)
 
 

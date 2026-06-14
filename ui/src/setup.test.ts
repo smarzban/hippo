@@ -11,7 +11,7 @@ const base: SetupState = {
   authMode: "password",
   ownerEmail: "",
   ownerPassword: "",
-  models: { chat_model: "", embedding_model: "", embedding_dim: 1536 },
+  models: { chat_model: "" },
 };
 
 describe("setup form", () => {

@@ -57,10 +57,6 @@ Then — `OPENAI_*` vars must be in the process environment, so load `.env` befo
 | `HIPPO_PUBLIC_URL` | _(required for oidc)_ | public base URL, e.g. `https://hippo.example.com` (used for OAuth redirect URI) |
 | `HIPPO_IAP_AUDIENCE` | _(required for iap)_ | GCP IAP backend service audience (`/projects/…/…`) |
 | `HIPPO_SOURCE_ROOTS` | _(unset)_ | colon-separated allowed ingest paths; required in `oidc`/`iap` modes |
-| `HIPPO_GITHUB_TOKEN` | _(unset)_ | GitHub personal access token for upload-to-repo |
-| `HIPPO_GITHUB_DOCS_REPO` | _(unset)_ | `owner/repo` for developer doc uploads |
-| `HIPPO_GITHUB_MANAGERS_REPO` | _(unset)_ | `owner/repo` for manager doc uploads |
-| `HIPPO_GITHUB_BRANCH` | `main` | branch to commit uploaded files to |
 | `HIPPO_MAX_UPLOAD_BYTES` | `10485760` | reject multipart uploads larger than this (413) |
 | `HIPPO_MAX_DOC_CHARS` | `1000000` | skip docs exceeding this char count before embedding (status: `skipped`) |
 | `HIPPO_UI_DIST` | _(unset)_ | path to built UI (`ui/dist`) for FastAPI to serve on one origin; set automatically in the Docker image |
@@ -114,7 +110,7 @@ Hippo keeps a `config` table in the database for operational, **non-secret** set
 | `allowed_domain` | takes effect on next restart |
 | `oidc_client_id` / `public_url` / `iap_audience` | takes effect on next restart |
 
-**Secrets are always env-only.** `OPENAI_API_KEY`, `HIPPO_OIDC_CLIENT_SECRET`, `HIPPO_SECRET_KEY`, `HIPPO_SETUP_TOKEN`, GitHub tokens, and all other credentials are never stored in the database and never returned by any API endpoint.
+**Secrets are always env-only.** `OPENAI_API_KEY`, `HIPPO_OIDC_CLIENT_SECRET`, `HIPPO_SECRET_KEY`, `HIPPO_SETUP_TOKEN`, and all other credentials are never stored in the database and never returned by any API endpoint.
 
 **`embedding_model` / `embedding_dim` are env-only**, not DB-overridable. The vector space and the `chunk_vec` table width are fixed when the index is created and only change via `hippo reindex` (a CLI op that reads the environment). A DB override could neither take effect nor stay accurate after a reindex, so the env-built embedder is the single source of truth — set them with `HIPPO_EMBEDDING_MODEL` / `HIPPO_EMBEDDING_DIM` and run `hippo reindex` to change them.
 
@@ -131,8 +127,6 @@ Every signed-in user can access the Settings view via the gear (⚙) button in t
 **Uploading documents:** click "Add doc" in the header, pick a file, and select one or more destination folders from the modal. Only folders writable by your role are shown (manual folders at or below your tier). The same file can be ingested into multiple folders.
 
 API endpoints backing the SPA and headless clients: `GET /health`, `GET /me`, `PATCH /me`, `GET /auth/config`, `POST /auth/login`, `POST /auth/logout`, `POST /me/password`, `GET /documents`, `GET /documents/{id}`, `GET /users`, `POST /users` (admin create-user), `PUT /users/{email}/role`, `POST /users/{email}/password` (admin reset), `GET /tokens`, `POST /tokens`, `DELETE /tokens/{id}`, `GET /folders`, `POST /folders`, `PATCH /folders/{id}`, `DELETE /folders/{id}`, `POST /folders/{id}/resync`, `GET /settings/status`, `GET /setup/status`, `POST /setup`, `GET /config`, `PUT /config`.
-
-**Upload to repo:** when `HIPPO_GITHUB_TOKEN` and a repo are configured, files uploaded via `/ingest` are committed to the configured GitHub repo via the Contents API. Without GitHub config, files are ingested directly (unversioned).
 
 **Legacy database note:** SP1 (roles & folder model) introduced a new database schema with no migration. A pre-SP1 database (with `documents.source_id` and no `folders` table) is rejected on startup with a clear "recreate the database" error. Delete the old `.db` file and re-sync your content.
 

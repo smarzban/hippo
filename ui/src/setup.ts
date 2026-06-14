@@ -1,11 +1,13 @@
-export const MIN_PASSWORD_LEN = 8;
+import { MIN_PASSWORD_LEN } from "./auth";  // single source of truth (LOW-29)
 
 export type SetupState = {
   token: string;
   authMode: "password" | "oidc" | "iap";
   ownerEmail: string;
   ownerPassword: string;
-  models: { chat_model: string; embedding_model: string; embedding_dim: number };
+  // Only chat_model: embedding model/dim are env-only (the vector space is fixed at
+  // index creation; changing it needs `hippo reindex`), so the wizard doesn't set them.
+  models: { chat_model: string };
 };
 
 const emailish = (s: string) => /.+@.+\..+/.test(s);
