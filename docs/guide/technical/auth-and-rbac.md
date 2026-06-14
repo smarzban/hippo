@@ -9,8 +9,8 @@ and enforced in `storage/`.
 The single source of truth for the rank comparison — nothing else defines it:
 
 ```python
-ROLE_RANK   = {"user": 0, "admin": 1, "owner": 2}
-VALID_ROLES = {"user", "admin", "owner"}
+ROLE_RANK    = {"user": 0, "admin": 1, "owner": 2}
+VALID_ROLES  = ("user", "admin", "owner")   # a tuple
 DEFAULT_ROLE = "user"
 ```
 
@@ -58,8 +58,10 @@ the wizard/`PUT /config` gates live.
 - **No enumeration:** missing user, no local password, and bad password all
   return the same generic 401. Failed attempts are logged (`hippo.auth`, email
   sanitized) for alerting.
-- **Sessions:** 7-day signed cookies via `SessionMiddleware` (requires
-  `HIPPO_SECRET_KEY`).
+- **Sessions:** signed cookies via `SessionMiddleware` (requires
+  `HIPPO_SECRET_KEY`). The code doesn't set `max_age` explicitly, so Starlette's
+  default lifetime (~14 days) applies; the cookie's `Secure` flag follows
+  `HIPPO_PUBLIC_URL`'s scheme.
 
 ## Authorization: folder tiers
 

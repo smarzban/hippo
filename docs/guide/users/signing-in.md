@@ -8,7 +8,7 @@ one you're in by what the home screen shows.
 You'll see an **email + password** form.
 
 - Enter the email and password your administrator gave you (or that you set).
-- After signing in, you stay signed in for 7 days (a session cookie).
+- After signing in, you stay signed in via a session cookie (about two weeks by default).
 - **Five wrong passwords in a row locks the account for 15 minutes.** Wait it
   out, or ask an admin to reset your password.
 - **Change your own password** any time in **Settings (⚙) → My Profile** — you'll
