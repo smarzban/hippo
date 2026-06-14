@@ -1,283 +1,19 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { DocDrawer } from "./DocDrawer";
-import {
-  buildDocIndex,
-  type DocIndex,
-  type DocMeta,
-  MARKER_RE,
-  processCitations,
-  stripNoSourcesMarker,
-} from "./citations";
+import { buildDocIndex, type DocIndex, type DocMeta } from "./citations";
 import Settings from "./Settings";
 import { errorDetail } from "./auth";
-import { flattenTree, writableFolders, uploadReducer, type Folder } from "./folders";
-import {
-  buildSetupPayload,
-  canSubmit,
-  fieldErrors,
-  type SetupState,
-} from "./setup";
+import { uploadReducer, type Folder } from "./folders";
+import SetupWizard from "./SetupWizard";
+import LoginScreen from "./LoginScreen";
+import UploadModal from "./UploadModal";
+import ChatView from "./ChatView";
 
 type OpenDoc = { id: number; section: string };
 
-const INIT_SETUP: SetupState = {
-  token: "",
-  authMode: "password",
-  ownerEmail: "",
-  ownerPassword: "",
-  models: { chat_model: "" },
-};
-
-function SetupWizard() {
-  const [state, setState] = useState<SetupState>(INIT_SETUP);
-  const [submitErr, setSubmitErr] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const errors = fieldErrors(state);
-  const ready = canSubmit(state);
-
-  async function finish() {
-    if (!ready) return;
-    setSubmitErr("");
-    setSubmitting(true);
-    try {
-      const r = await fetch("/setup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildSetupPayload(state)),
-      });
-      if (r.ok) {
-        window.location.reload();
-      } else {
-        const b = await r.json().catch(() => ({}));
-        setSubmitErr(b.detail || `Setup failed (${r.status})`);
-        setSubmitting(false);
-      }
-    } catch {
-      setSubmitErr("Network error — is the server running?");
-      setSubmitting(false);
-    }
-  }
-
-  const label = { display: "block", fontWeight: 600, marginBottom: 2 } as const;
-  const field = { marginBottom: 12 } as const;
-
-  return (
-    <div className="app">
-      <div className="empty signin">
-        <span className="logo">{"\u{1F99B}"}</span>
-        <h1>Hippo — First-run Setup</h1>
-        <p className="tagline">Set up your instance — this runs once.</p>
-
-        <form
-          className="setup-form"
-          style={{ width: "100%", maxWidth: 420, textAlign: "left" }}
-          onSubmit={(e) => {
-            e.preventDefault();
-            void finish();
-          }}
-        >
-          <div style={field}>
-            <label style={label}>Setup token</label>
-            <input
-              type="text"
-              placeholder="From HIPPO_SETUP_TOKEN (env or startup log)"
-              value={state.token}
-              autoFocus
-              style={{ width: "100%" }}
-              onChange={(e) => setState((s) => ({ ...s, token: e.target.value }))}
-            />
-          </div>
-
-          <div style={field}>
-            <label style={label}>Authentication mode</label>
-            <select
-              value={state.authMode}
-              style={{ width: "100%" }}
-              onChange={(e) =>
-                setState((s) => ({ ...s, authMode: e.target.value as SetupState["authMode"] }))
-              }
-            >
-              <option value="password">Password (email + password)</option>
-              <option value="oidc">OIDC / Google (OAuth2)</option>
-              <option value="iap">IAP (Google Cloud Identity-Aware Proxy)</option>
-            </select>
-          </div>
-
-          <div style={field}>
-            <label style={label}>Owner email</label>
-            <input
-              type="email"
-              placeholder="you@example.com"
-              value={state.ownerEmail}
-              style={{ width: "100%" }}
-              onChange={(e) => setState((s) => ({ ...s, ownerEmail: e.target.value }))}
-            />
-            {errors.email && <p className="error" style={{ margin: "4px 0 0" }}>{errors.email}</p>}
-          </div>
-
-          {state.authMode === "password" && (
-            <div style={field}>
-              <label style={label}>Owner password</label>
-              <input
-                type="password"
-                placeholder="At least 8 characters"
-                value={state.ownerPassword}
-                style={{ width: "100%" }}
-                onChange={(e) => setState((s) => ({ ...s, ownerPassword: e.target.value }))}
-              />
-              {errors.password && (
-                <p className="error" style={{ margin: "4px 0 0" }}>{errors.password}</p>
-              )}
-            </div>
-          )}
-
-          <details style={{ marginBottom: 12 }}>
-            <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-              Chat model (optional — default from server env)
-            </summary>
-            <div style={{ marginTop: 8 }}>
-              <div style={field}>
-                <label style={label}>Chat model</label>
-                <input
-                  type="text"
-                  placeholder="e.g. openai:gpt-4o"
-                  value={state.models.chat_model}
-                  style={{ width: "100%" }}
-                  onChange={(e) =>
-                    setState((s) => ({ ...s, models: { ...s.models, chat_model: e.target.value } }))
-                  }
-                />
-              </div>
-              <p className="sec" style={{ margin: "4px 0 0" }}>
-                Embedding model/dimension are set via <code>HIPPO_EMBEDDING_*</code> in the
-                environment (they can't change after the index is created).
-              </p>
-            </div>
-          </details>
-
-          {submitErr && <p className="error">{submitErr}</p>}
-
-          <button
-            className="upload-btn"
-            type="submit"
-            disabled={!ready || submitting}
-            style={{ marginTop: 4 }}
-          >
-            {submitting ? "Setting up…" : "Complete setup"}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
-
 type Me = { email: string; role: string; auth_mode: string; name: string };
-
-function toolLabel(name: string | undefined, input: unknown): string {
-  const i = (input ?? {}) as Record<string, unknown>;
-  switch (name) {
-    case "search":
-      return `Searching "${i.query ?? "…"}"`;
-    case "read_document":
-      return `Reading document #${i.doc_id ?? "…"}`;
-    case "list_documents":
-      return i.query ? `Listing documents matching "${i.query}"` : "Listing documents";
-    case "grep":
-      return `Scanning sources for ${i.pattern ?? "…"}`;
-    default:
-      return name ?? "working";
-  }
-}
-
-const SUGGESTIONS = [
-  "What docs do you have in there?",
-  "How does Polly integrate with Telegram?",
-  "Why did we do Project X?",
-];
-
-function AssistantText({
-  text,
-  docIndex,
-  onOpen,
-}: {
-  text: string;
-  docIndex: DocIndex;
-  onOpen: (id: number, section: string) => void;
-}) {
-  const { text: grounded, refused } = useMemo(() => stripNoSourcesMarker(text), [text]);
-  const { processed, sources } = useMemo(
-    () => processCitations(grounded, docIndex),
-    [grounded, docIndex],
-  );
-
-  const components = useMemo(
-    () => ({
-      code({ className, children, ...props }: React.ComponentProps<"code">) {
-        const m = MARKER_RE.exec(String(children));
-        if (m) {
-          const num = Number(m[1]);
-          const src = sources.find((s) => s.num === num);
-          const clickable = !!src && src.docId != null;
-          return (
-            <sup
-              className={`cite-ref${clickable ? " clickable" : ""}`}
-              title={src ? src.title + (src.section ? ` › ${src.section}` : "") : ""}
-              onClick={clickable ? () => onOpen(src!.docId!, src!.scrollTarget) : undefined}
-            >
-              {num}
-            </sup>
-          );
-        }
-        return (
-          <code className={className} {...props}>
-            {children}
-          </code>
-        );
-      },
-    }),
-    [sources, onOpen],
-  );
-
-  return (
-    <div className="md">
-      <Markdown remarkPlugins={[remarkGfm]} components={components}>
-        {processed}
-      </Markdown>
-      {sources.length > 0 && (
-        <div className="sources">
-          <span className="sources-label">Sources</span>
-          <ol>
-            {sources.map((s) => (
-              <li key={s.num}>
-                {s.docId != null ? (
-                  <button className="source-link" onClick={() => onOpen(s.docId!, s.scrollTarget)}>
-                    {s.title}
-                    {s.section && <span className="sec"> › {s.section}</span>}
-                  </button>
-                ) : (
-                  <span className="source-dead">
-                    {s.title}
-                    {s.section && ` › ${s.section}`}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
-      {sources.length === 0 && !refused && processed.trim().length > 120 && (
-        <p className="no-sources" title="Hippo should answer only from indexed docs with citations.">
-          ⚠ No sources cited — verify independently.
-        </p>
-      )}
-    </div>
-  );
-}
 
 export default function App() {
   const { messages, sendMessage, status, error } = useChat({
@@ -378,27 +114,15 @@ export default function App() {
 
   if (needsLogin) {
     return (
-      <div className="app">
-        <div className="empty signin">
-          <span className="logo">{"\u{1F99B}"}</span>
-          <h1>Hippo</h1>
-          {authMode === "password" ? (
-            <form className="login-form" onSubmit={passwordLogin}>
-              <input type="email" placeholder="email" value={loginEmail} autoFocus
-                onChange={(e) => setLoginEmail(e.target.value)} />
-              <input type="password" placeholder="password" value={loginPw}
-                onChange={(e) => setLoginPw(e.target.value)} />
-              <button className="upload-btn" type="submit">Sign in</button>
-              {loginErr && <p className="error">{loginErr}</p>}
-            </form>
-          ) : (
-            <>
-              <p>Sign in with your Google account to continue.</p>
-              <a className="upload-btn" href="/auth/login">Sign in with Google</a>
-            </>
-          )}
-        </div>
-      </div>
+      <LoginScreen
+        authMode={authMode}
+        email={loginEmail}
+        setEmail={setLoginEmail}
+        password={loginPw}
+        setPassword={setLoginPw}
+        error={loginErr}
+        onSubmit={passwordLogin}
+      />
     );
   }
 
@@ -431,120 +155,33 @@ export default function App() {
       </header>
 
       {showUpload && (
-        <div className="modal-backdrop" onClick={() => setShowUpload(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Add a document</h3>
-            <input type="file" accept=".md,.markdown,.txt,.html,.htm,.docx"
-              onChange={(e) => setPickFile(e.target.files?.[0] ?? null)} />
-            <p>Destination folders</p>
-            <div className="dest-list">
-              {flattenTree(writableFolders(folders)).map((f) => (
-                <label key={f.id} style={{ paddingLeft: f.depth * 12 }}>
-                  <input type="checkbox" checked={picked.includes(f.id)}
-                    onChange={(e) => setPicked((p) =>
-                      e.target.checked ? [...p, f.id] : p.filter((x) => x !== f.id))} />
-                  {f.name} <span className="sec">{f.tier}</span>
-                </label>
-              ))}
-            </div>
-            {up.status === "uploading" && <p>Uploading… {up.done}/{up.dests.length}</p>}
-            {up.status === "error" && <p className="error">{up.error}</p>}
-            {up.status === "done"
-              ? <button onClick={() => setShowUpload(false)}>Done</button>
-              : <button disabled={!pickFile || picked.length === 0 || up.status === "uploading"}
-                  onClick={runUpload}>Upload</button>}
-          </div>
-        </div>
+        <UploadModal
+          folders={folders}
+          picked={picked}
+          setPicked={setPicked}
+          pickFile={pickFile}
+          setPickFile={setPickFile}
+          up={up}
+          onUpload={runUpload}
+          onClose={() => setShowUpload(false)}
+        />
       )}
 
       {view === "settings" && me ? (
         <Settings role={me.role as "user" | "admin" | "owner"} authMode={authMode} onClose={() => setView("chat")} />
       ) : (
         <>
-          <main>
-            {messages.length === 0 && (
-              <div className="empty">
-                <p>Ask me anything that lives in the team docs.</p>
-                <div className="suggestions">
-                  {SUGGESTIONS.map((s) => (
-                    <button key={s} onClick={() => sendMessage({ text: s })}>
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {messages.map((m) => (
-              <div key={m.id} className={`msg ${m.role}`}>
-                {m.parts.map((part, i) => {
-                  if (part.type === "text") {
-                    return m.role === "user" ? (
-                      <p key={i} className="user-text">
-                        {part.text}
-                      </p>
-                    ) : (
-                      <AssistantText key={i} text={part.text} docIndex={docIndex} onOpen={onOpen} />
-                    );
-                  }
-                  if (part.type === "reasoning" && part.text.trim()) {
-                    return (
-                      <details key={i} className="reasoning">
-                        <summary>thinking</summary>
-                        <p>{part.text}</p>
-                      </details>
-                    );
-                  }
-                  if (part.type.startsWith("tool-") || part.type === "dynamic-tool") {
-                    const p = part as {
-                      type: string;
-                      state?: string;
-                      input?: unknown;
-                      toolName?: string;
-                    };
-                    const name =
-                      part.type === "dynamic-tool" ? p.toolName : part.type.replace("tool-", "");
-                    const pending = p.state !== "output-available" && p.state !== "output-error";
-                    return (
-                      <div key={i} className={`tool ${pending ? "pending" : "done"}`}>
-                        {toolLabel(name, p.input)}
-                      </div>
-                    );
-                  }
-                  return null;
-                })}
-              </div>
-            ))}
-
-            {status === "submitted" && <div className="thinking">&bull;&bull;&bull;</div>}
-            {error && (
-              <div className="error">
-                {/limit/i.test(error.message)
-                  ? "I reached my research limit for this question — it needed more lookups than I'm allowed per answer. Try narrowing it, or ask about one thing at a time."
-                  : `Something went wrong: ${error.message}`}
-              </div>
-            )}
-            <div ref={bottomRef} />
-          </main>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!input.trim()) return;
-              sendMessage({ text: input });
-              setInput("");
-            }}
-          >
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask Hippo…"
-              autoFocus
-            />
-            <button type="submit" disabled={status !== "ready"}>
-              Send
-            </button>
-          </form>
+          <ChatView
+            messages={messages}
+            sendMessage={sendMessage}
+            status={status}
+            error={error}
+            input={input}
+            setInput={setInput}
+            docIndex={docIndex}
+            onOpen={onOpen}
+            bottomRef={bottomRef}
+          />
 
           {openDoc && (
             <DocDrawer docId={openDoc.id} section={openDoc.section} onClose={() => setOpenDoc(null)} />
