@@ -107,7 +107,8 @@ _PLACEHOLDER = "_Searching the knowledge base…_"
 
 
 async def handle_event(event: dict, client, *, store: Storage, agent,
-                       settings: Settings, bot_user_id: str, is_dm: bool) -> None:
+                       settings: Settings, bot_user_id: str, is_dm: bool,
+                       allowed_domain: str | None = None) -> None:
     """Handle one inbound Slack message (DM or channel @mention). Pure of Bolt:
     takes the event dict + a duck-typed async web client, so it is fully testable
     with a fake client. Resolves identity, applies the split-by-surface access
@@ -140,7 +141,9 @@ async def handle_event(event: dict, client, *, store: Storage, agent,
             await client.chat_postMessage(channel=channel, text=_NO_ACCESS, thread_ts=thread_ts)
             return
         try:
-            role = resolve_role(store, settings, email)
+            # allowed_domain is the EFFECTIVE value (DB overlay wins) threaded from
+            # cli.py; None falls back to settings.allowed_domain inside resolve_role.
+            role = resolve_role(store, settings, email, allowed_domain=allowed_domain)
         except AuthError:
             log.warning("slack: out-of-domain user %s", safe_log(email))
             await client.chat_postMessage(channel=channel, text=_NO_ACCESS, thread_ts=thread_ts)
@@ -188,9 +191,12 @@ async def _fetch_prior(client, channel: str, thread_ts: str | None,
     return [m for m in msgs if m.get("ts") != current_ts]
 
 
-def build_slack_app(store: Storage, agent, settings: Settings):
+def build_slack_app(store: Storage, agent, settings: Settings, *,
+                    allowed_domain: str | None = None):
     """Wire Bolt handlers for app_mention (channel) and message.im (DM) onto
-    handle_event. Thin glue — not unit-tested (the runner is in cli.py)."""
+    handle_event. Thin glue — not unit-tested (the runner is in cli.py).
+    allowed_domain is the EFFECTIVE domain (DB overlay wins), passed by cli.py so
+    the Slack surface honors a wizard/PUT-config domain gate like the HTTP surface."""
     from slack_bolt.async_app import AsyncApp
 
     # AsyncApp defers token verification to runtime (no auth.test at construction),
@@ -204,7 +210,8 @@ def build_slack_app(store: Storage, agent, settings: Settings):
         if str(event.get("channel", "")).startswith("D"):
             return
         await handle_event(event, client, store=store, agent=agent, settings=settings,
-                           bot_user_id=context.bot_user_id, is_dm=False)
+                           bot_user_id=context.bot_user_id, is_dm=False,
+                           allowed_domain=allowed_domain)
 
     @app.event("message")
     async def _on_message(event, client, context):
@@ -212,6 +219,7 @@ def build_slack_app(store: Storage, agent, settings: Settings):
         if event.get("channel_type") != "im" or event.get("subtype"):
             return
         await handle_event(event, client, store=store, agent=agent, settings=settings,
-                           bot_user_id=context.bot_user_id, is_dm=True)
+                           bot_user_id=context.bot_user_id, is_dm=True,
+                           allowed_domain=allowed_domain)
 
     return app

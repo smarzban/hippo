@@ -39,7 +39,7 @@ api.py         build_app(settings, model_override=None): /chat streams Vercel AI
                /tokens: GET/POST (self-service, secret returned once), DELETE /{id} (self or admin); GET ?all=true (admin).
                /settings/status (admin): effective auth_mode/chat_model/embedding_model (cfg.get — DB overlay wins), setup_complete flag, repo bools, counts — no secrets.
                GET /setup/status (public): {setup_complete, auth_modes_available}. POST /setup (token-gated, once): wizard endpoint — sets owner, renames roots, persists operational config, marks setup complete; 409 if already complete; 403 on wrong token; validates secret env vars are present for the chosen mode.
-               GET /config (owner): effective operational config for all DB_OVERRIDABLE keys (DB value else env default); never returns a secret. PUT /config (owner): upsert DB_OVERRIDABLE keys; rejects unknown/secret keys (400); embedding_model/dim locked once documents exist (409); auth_mode switch anti-lockout guard (_validate_auth_switch).
+               GET /config (owner): effective operational config for all DB_OVERRIDABLE keys (DB value else env default); never returns a secret. PUT /config (owner): upsert DB_OVERRIDABLE keys; rejects unknown/secret/env-only keys (400, incl. embedding_model/dim); auth_mode switch anti-lockout guard (_validate_auth_switch).
                Serves ui/dist as static files when HIPPO_UI_DIST is set (single origin, :8000).
                Mounts FastMCP server at /mcp (HIPPO_MCP_ENABLED, default true) with _McpBearerAuth middleware (bearer token → role via _mcp_role contextvar).
                cfg = Config(settings, store) built in build_app; operational keys resolved at construction (auth_mode, oidc/iap/domain wiring); chat_model read LIVE per /chat via _live_agent().
@@ -60,9 +60,11 @@ slack_bot.py   Slack Q&A bot: Socket Mode via slack-bolt. Pure helpers
 config.py      Settings, env prefix HIPPO_ (pydantic-settings). auth_mode: Literal["none","oidc","iap","password"].
                setup_token: str (env-only, never stored in DB; if empty a random token is logged at startup).
                DB_OVERRIDABLE: frozenset of operational keys the config table may override (auth_mode, chat_model,
-               enrich_model, embedding_model, embedding_dim, allowed_domain, oidc_client_id, public_url, iap_audience).
+               enrich_model, allowed_domain, oidc_client_id, public_url, iap_audience). embedding_model/embedding_dim
+               are ENV-ONLY (the env-built embedder + chunk_vec are the source of truth; a DB override couldn't take
+               effect and would go stale after reindex — see MED-07).
                Config(settings, store).get(key) → DB value if key in DB_OVERRIDABLE and set, else settings.key; secrets
-               never read from DB. _coerce() converts embedding_dim to int.
+               never read from DB.
 db.py          connect() -> sqlite3: folder-tree schema (folders adjacency table, documents.folder_id, surrogate users(id PK) + tokens(user_id FK), config(key,value)), WAL, sqlite-vec, FTS5 + sync triggers.
                Seeds three root folders on first open (Default/user, Private/admin, Owner/owner). Legacy-DB guard: raises RuntimeError("recreate the database") if documents.source_id found.
 embeddings.py  Embedder protocol; OpenAIEmbedder (default text-embedding-3-small); FakeEmbedder (deterministic, tests/offline)
