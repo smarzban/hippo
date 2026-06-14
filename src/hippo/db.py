@@ -134,5 +134,9 @@ def connect(db_path: Path | str, embedding_dim: int) -> sqlite3.Connection:
     con.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vec USING vec0(embedding float[{int(embedding_dim)}])"
     )
+    # Index documents.folder_id: the per-folder doc_count subquery in list_folders/
+    # get_folder (and paths_for_folder / sync deletion) filters documents by folder_id,
+    # which is otherwise a full documents scan per folder — O(folders × documents) (LOW-34).
+    con.execute("CREATE INDEX IF NOT EXISTS idx_documents_folder_id ON documents(folder_id)")
     con.commit()
     return con

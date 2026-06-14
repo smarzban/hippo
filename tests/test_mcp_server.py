@@ -225,6 +225,17 @@ def test_build_mcp_server_registers_four_tools(tmp_path):
     assert {t.name for t in tools} == {"search", "read_document", "list_documents", "grep"}
 
 
+def test_mcp_tools_run_async_through_server(tmp_path):
+    """MED-05: tools are async (offloaded to a worker thread via anyio.to_thread) so a
+    blocking embed/grep doesn't stall the single MCP event loop. Invoking one through
+    the server's async call path returns the role-filtered result without error."""
+    store = _rbac_store(tmp_path)
+    server = build_mcp_server(store, require_auth=False)   # stdio default role = owner
+    result = asyncio.run(server.call_tool("search", {"query": "zebra", "top_k": 5}))
+    # the framed hit text (containing "zebra") flows back through the async call path
+    assert "zebra" in str(result)
+
+
 # ---------------------------------------------------------------------------
 # _mcp_role contextvar
 # ---------------------------------------------------------------------------

@@ -9,6 +9,9 @@ caller's role comes from their bearer token (set per request by the HTTP mount's
 auth middleware in api.py) via the _mcp_role contextvar."""
 
 from contextvars import ContextVar
+from functools import partial
+
+import anyio
 
 from .storage import Storage
 from .tool_io import as_untrusted_data, clamp_top_k
@@ -43,10 +46,11 @@ def mcp_read_document(store: Storage, role: str, doc_id: int) -> dict:
 def mcp_list_documents(store: Storage, role: str, query: str | None = None) -> list[dict]:
     # path/title stay raw (citation identifiers); the free-text summary is
     # document-derived, so frame it as untrusted data like search/read/grep.
+    # list_document_meta avoids materializing every doc's full content (MED-17).
     return [
         {"doc_id": d.id, "path": d.path, "title": d.title,
          "summary": as_untrusted_data(d.summary) if d.summary else ""}
-        for d in store.list_documents(query=query, role=role)
+        for d in store.list_document_meta(query=query, role=role)
     ]
 
 
@@ -91,26 +95,33 @@ def build_mcp_server(store: Storage, *, require_auth: bool):
             raise PermissionError("no authenticated role for this MCP request")
         return "owner"
 
+    # FastMCP invokes sync tool functions DIRECTLY on the event loop (no threadpool),
+    # so a blocking call inside one stalls the single MCP session manager's loop for
+    # every concurrent client. search embeds the query (network) and grep is a CPU-bound
+    # regex scan — both block. Make the tools async and offload the blocking Storage call
+    # to a worker thread (mirroring how pydantic-ai offloads the in-app agent's tools),
+    # keeping the loop responsive (MED-05). role() is read on the loop thread BEFORE the
+    # hop and passed in (anyio copies contextvars, but capturing it is explicit/clear).
     @mcp.tool()
-    def search(query: str, top_k: int = 8) -> list[dict]:
+    async def search(query: str, top_k: int = 8) -> list[dict]:
         """Hybrid keyword+semantic search over the team knowledge base. Returns
         chunks with provenance (path, title, section). Use this first."""
-        return mcp_search(store, role(), query, top_k)
+        return await anyio.to_thread.run_sync(partial(mcp_search, store, role(), query, top_k))
 
     @mcp.tool()
-    def read_document(doc_id: int) -> dict:
+    async def read_document(doc_id: int) -> dict:
         """Read a full document by id (ids come from search/list_documents)."""
-        return mcp_read_document(store, role(), doc_id)
+        return await anyio.to_thread.run_sync(partial(mcp_read_document, store, role(), doc_id))
 
     @mcp.tool()
-    def list_documents(query: str | None = None) -> list[dict]:
+    async def list_documents(query: str | None = None) -> list[dict]:
         """Browse indexed documents (titles + summaries), optionally filtered."""
-        return mcp_list_documents(store, role(), query)
+        return await anyio.to_thread.run_sync(partial(mcp_list_documents, store, role(), query))
 
     @mcp.tool()
-    def grep(pattern: str) -> list[dict]:
+    async def grep(pattern: str) -> list[dict]:
         """Exact regex scan over raw document text (case-insensitive) for
         identifiers/codenames fuzzy search might miss."""
-        return mcp_grep(store, role(), pattern)
+        return await anyio.to_thread.run_sync(partial(mcp_grep, store, role(), pattern))
 
     return mcp
