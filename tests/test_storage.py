@@ -521,3 +521,124 @@ def test_claim_setup_is_atomic_once(store):
     assert store.is_setup_complete() is True
     assert store.claim_setup() is False
     assert store.claim_setup() is False
+
+
+# ---------------------------------------------------------------------------
+# PR-5 perf/concurrency regressions
+# ---------------------------------------------------------------------------
+
+def _user_root_id(store):
+    return store.con.execute(
+        "SELECT id FROM folders WHERE min_role='user' AND parent_id IS NULL").fetchone()[0]
+
+
+def _admin_root_id(store):
+    return store.con.execute(
+        "SELECT id FROM folders WHERE min_role='admin' AND parent_id IS NULL").fetchone()[0]
+
+
+def _add(store, path, text, folder_id, chash=None):
+    store.upsert_document(source_type="folder", path=path, title=path, content=text,
+        content_hash=chash or (path + "h"),
+        chunks=[Chunk(position=0, heading_path=path, text=text)],
+        embed_inputs=[text], folder_id=folder_id)
+
+
+def test_list_document_meta_is_role_filtered_projection(store):
+    """MED-17: list_document_meta returns id/path/title/summary only (no content) and
+    is role-filtered like list_documents."""
+    _add(store, "team/a.md", "alpha", _user_root_id(store))
+    _add(store, "mgr/b.md", "beta", _admin_root_id(store))
+    user_docs = store.list_document_meta(role="user")
+    assert {d.path for d in user_docs} == {"team/a.md"}          # admin-tier hidden
+    assert not hasattr(user_docs[0], "content")                  # projection: no content
+    owner_docs = store.list_document_meta(role="owner")
+    assert {d.path for d in owner_docs} == {"team/a.md", "mgr/b.md"}
+
+
+def test_document_and_folder_count(store):
+    """LOW-33: count-only helpers (no full-list materialization)."""
+    assert store.document_count() == 0
+    _add(store, "a.md", "x", _user_root_id(store))
+    _add(store, "b.md", "y", _user_root_id(store))
+    assert store.document_count() == 2
+    assert store.folder_count() == 3                             # the three seeded roots
+
+
+def test_documents_folder_id_index_exists(store):
+    """LOW-34: the documents.folder_id index backs the per-folder doc_count subquery."""
+    names = {r[0] for r in store.con.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_documents_folder_id" in names
+
+
+def test_search_handles_sparse_low_tier_role(store):
+    """MED-18: with most chunks in an admin-tier folder, a user-tier search returns
+    only the visible (user-tier) hit in a single KNN over-fetch — no crash, no loop."""
+    for i in range(20):
+        _add(store, f"mgr/{i}.md", f"secret zebra {i}", _admin_root_id(store), chash=f"m{i}")
+    _add(store, "team/pub.md", "public zebra note", _user_root_id(store))
+    hits = store.search_hybrid("zebra", top_k=5, role="user")
+    assert hits and all(h.path == "team/pub.md" for h in hits)   # only the user-tier doc
+
+
+def test_grep_caps_chunks_scanned(store, monkeypatch, caplog):
+    """MED-16: grep bounds how many chunks it materializes/scans, and logs (doesn't
+    silently truncate) when the cap is reached."""
+    import logging
+    import hippo.storage as storage_mod
+    monkeypatch.setattr(storage_mod, "GREP_MAX_CHUNKS", 2)
+    for i in range(5):
+        _add(store, f"d{i}.md", f"needle {i}", _user_root_id(store), chash=f"d{i}")
+    with caplog.at_level(logging.WARNING, logger="hippo.storage"):
+        store.grep("needle", role="owner")
+    assert any("cap reached" in r.getMessage() for r in caplog.records)
+
+
+def test_reindex_aborts_on_concurrent_chunk_change(store):
+    """MED-06: a concurrent ingest during reindex's (unlocked) embedding window must
+    abort the rebuild — otherwise the new chunk is stranded with no vector."""
+    _add(store, "a.md", "alpha", _user_root_id(store))
+
+    class _SneakyEmbedder:
+        model, dim = "fake", 32
+        def __init__(self, s): self._s, self._fired = s, False
+        def embed(self, texts):
+            if not self._fired:                                  # simulate a concurrent ingest
+                self._fired = True
+                did = self._s.con.execute("SELECT id FROM documents LIMIT 1").fetchone()[0]
+                with self._s.con:
+                    self._s.con.execute(
+                        "INSERT INTO chunks(document_id, position, heading_path, text) "
+                        "VALUES (?,1,'','sneaked in')", (did,))
+            return FakeEmbedder(dim=32).embed(texts)
+
+    store.embedder = _SneakyEmbedder(store)
+    with pytest.raises(ValueError, match="changed during reindex"):
+        store.reindex(32)
+    # the original vector index is left intact (abort happened before the DROP)
+    assert store.search_hybrid("alpha", top_k=3, role="owner")
+
+
+def test_reindex_aborts_on_concurrent_text_change_same_ids(store):
+    """Codex review (PR-5): comparing only chunk IDS misses a delete+reinsert with
+    SQLite rowid reuse (same id set, different text) — which would embed stale text
+    under reused ids. reindex compares (id, text), so a text change during the embed
+    window also aborts."""
+    _add(store, "a.md", "alpha", _user_root_id(store))
+
+    class _TextMutatingEmbedder:
+        model, dim = "fake", 32
+        def __init__(self, s): self._s, self._fired = s, False
+        def embed(self, texts):
+            if not self._fired:                              # mutate text, keep id set
+                self._fired = True
+                with self._s.con:
+                    self._s.con.execute(
+                        "UPDATE chunks SET text='REPLACED' "
+                        "WHERE id=(SELECT min(id) FROM chunks)")
+            return FakeEmbedder(dim=32).embed(texts)
+
+    store.embedder = _TextMutatingEmbedder(store)
+    with pytest.raises(ValueError, match="changed during reindex"):
+        store.reindex(32)

@@ -116,10 +116,11 @@ def build_agent(model) -> Agent[HubDeps, str]:
         """
         # path/title stay raw (they are the citation identifiers the model echoes);
         # the free-text summary is document-derived, so frame it as untrusted data too.
+        # list_document_meta avoids reading every doc's full content just to list them.
         return [
             {"doc_id": d.id, "path": d.path, "title": d.title,
              "summary": _as_data(d.summary) if d.summary else ""}
-            for d in ctx.deps.store.list_documents(query=query, role=ctx.deps.role)
+            for d in ctx.deps.store.list_document_meta(query=query, role=ctx.deps.role)
         ]
 
     @agent.tool

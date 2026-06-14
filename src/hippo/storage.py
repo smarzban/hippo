@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import re
 import secrets
 import sqlite3
@@ -14,6 +15,8 @@ from .chunking import Chunk
 from .embeddings import Embedder
 from .roles import DEFAULT_ROLE, VALID_ROLES, readable_min_roles
 
+log = logging.getLogger("hippo.storage")
+
 
 @dataclass
 class Document:
@@ -23,6 +26,17 @@ class Document:
     title: str
     content: str
     content_hash: str
+    summary: str | None
+
+
+@dataclass
+class DocumentMeta:
+    """Lightweight document projection — no `content` column. For browse/list surfaces
+    (agent list_documents tool, MCP, GET /documents) that only need metadata, so the
+    full canonical markdown of every document isn't read+materialized per request."""
+    id: int
+    path: str
+    title: str
     summary: str | None
 
 
@@ -50,6 +64,8 @@ class Folder:
 
 GREP_MAX_PATTERN = 200      # reject absurdly long patterns
 GREP_TIMEOUT_S = 2.0        # wall-clock cap per chunk scan (regex module)
+GREP_MAX_CHUNKS = 5000      # cap chunks materialized+scanned per grep (memory + lock bound)
+VEC_OVERFETCH = 10          # _search_vec candidate multiplier (single fetch, no backoff loop)
 
 
 def _norm_email(e: str) -> str:
@@ -221,6 +237,22 @@ class Storage:
         sql += " ORDER BY d.path"
         with self._lock:
             return [Document(*r) for r in self.con.execute(sql, args)]
+
+    def list_document_meta(self, query: str | None = None, *, role: str) -> list[DocumentMeta]:
+        """Like list_documents but WITHOUT the content column — for callers that only
+        need id/path/title/summary (browse/list). Avoids reading the entire corpus's
+        canonical markdown into memory just to discard it (MED-17)."""
+        where, params = _role_filter(role)
+        sql = ("SELECT d.id, d.path, d.title, d.summary "
+               "FROM documents d JOIN folders f ON f.id = d.folder_id WHERE " + where)
+        args: list = list(params)
+        if query:
+            sql += " AND (d.title LIKE ? OR d.path LIKE ? OR coalesce(d.summary,'') LIKE ?)"
+            like = f"%{query}%"
+            args += [like, like, like]
+        sql += " ORDER BY d.path"
+        with self._lock:
+            return [DocumentMeta(*r) for r in self.con.execute(sql, args)]
 
     def paths_for_folder(self, folder_id: int) -> set[str]:
         with self._lock:
@@ -662,6 +694,10 @@ class Storage:
         with self._lock:
             return self.con.execute("SELECT count(*) FROM documents").fetchone()[0]
 
+    def folder_count(self) -> int:
+        with self._lock:
+            return self.con.execute("SELECT count(*) FROM folders").fetchone()[0]
+
     # -- search --------------------------------------------------------------
 
     RRF_K = 60
@@ -706,16 +742,19 @@ class Storage:
     def _search_vec(self, vec: list[float], limit: int, role: str) -> list[int]:
         serialized = sqlite_vec.serialize_float32(vec)
         total = self.con.execute("SELECT count(*) FROM chunks").fetchone()[0]
-        k = limit
-        while True:
-            rows = [r[0] for r in self.con.execute(
-                "SELECT rowid FROM chunk_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-                (serialized, k),
-            )]
-            visible = self._visible_ids(rows, role)
-            if len(visible) >= limit or len(rows) < k or k >= total:
-                return visible[:limit]
-            k = min(k * 4, total)
+        if total == 0:
+            return []
+        # ONE generous over-fetch (capped at total), then role-filter the candidates.
+        # The old code re-ran the full brute-force vec0 KNN in a *4 backoff loop until
+        # enough survived the role filter — for a low-tier user whose readable folders
+        # hold a small fraction of chunks that meant several full scans per query. We
+        # accept fewer-than-limit results for a role-sparse corpus instead (MED-18).
+        k = min(limit * VEC_OVERFETCH, total)
+        rows = [r[0] for r in self.con.execute(
+            "SELECT rowid FROM chunk_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+            (serialized, k),
+        )]
+        return self._visible_ids(rows, role)[:limit]
 
     def _visible_ids(self, chunk_ids: list[int], role: str) -> list[int]:
         """Filter chunk ids to those the role may see, preserving order. Also drops
@@ -763,6 +802,20 @@ class Storage:
                     )
                 new_vectors.append((cid, sqlite_vec.serialize_float32(v)))
         with self._lock, self.con:  # atomic swap, only reached if all embeds succeeded
+            # Detect a concurrent ingest during the (unlocked) embedding window: if the
+            # chunk set changed, the snapshot is stale — rebuilding chunk_vec from it
+            # would strand new chunks with no vector (silent retrieval gap, MED-06).
+            # Compare full (id, text), not just ids: an update deletes+reinserts a doc's
+            # chunks and SQLite can REUSE the freed rowids, so the id set can be unchanged
+            # while the text differs — embedding old text under reused ids. Abort BEFORE
+            # the DROP so the existing index stays intact; the operator re-runs reindex
+            # with no concurrent sync/upload.
+            current = self.con.execute("SELECT id, text FROM chunks ORDER BY id").fetchall()
+            if current != rows:
+                raise ValueError(
+                    "documents changed during reindex (concurrent ingest detected); the "
+                    "vector index was left untouched — re-run `hippo reindex` with no "
+                    "concurrent sync/upload")
             self.con.execute("DROP TABLE IF EXISTS chunk_vec")
             self.con.execute(
                 f"CREATE VIRTUAL TABLE chunk_vec USING vec0(embedding float[{int(embedding_dim)}])"
@@ -791,13 +844,21 @@ class Storage:
         except regex.error as e:
             raise ValueError(f"invalid regex pattern {pattern!r}: {e}") from e
         where, params = _role_filter(role)
+        # Bound the materialization: without a LIMIT this fetchall pulls the full text of
+        # EVERY role-visible chunk into memory (and holds the connection lock for the
+        # whole fetch). Cap it so grep stays bounded in memory + lock-hold; if the cap
+        # bites, say so rather than silently truncating (MED-16).
         with self._lock:
             rows = self.con.execute(
                 f"""SELECT c.id, d.id, d.path, d.title, c.heading_path, c.text
                     FROM chunks c JOIN documents d ON d.id = c.document_id
-                    JOIN folders f ON f.id = d.folder_id WHERE {where}""",
-                params,
+                    JOIN folders f ON f.id = d.folder_id WHERE {where} LIMIT ?""",
+                (*params, GREP_MAX_CHUNKS + 1),
             ).fetchall()
+        if len(rows) > GREP_MAX_CHUNKS:
+            rows = rows[:GREP_MAX_CHUNKS]
+            log.warning("grep scanned only the first %d role-visible chunks (cap reached); "
+                        "some matches beyond that may be missed", GREP_MAX_CHUNKS)
         hits: list[SearchHit] = []
         deadline = time.monotonic() + GREP_TIMEOUT_S
         for row in rows:
