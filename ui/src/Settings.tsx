@@ -320,13 +320,16 @@ function StatusPanel() {
 
 function InstancePanel() {
   const [cfg, setCfg] = useState<Record<string, any> | null>(null);
+  // embedding_model/dim are env-only (not in /config); read them from /settings/status.
+  const [status, setStatus] = useState<Record<string, any> | null>(null);
   const [note, setNote] = useState("");
   useEffect(() => { getJSON("/config").then(setCfg).catch(() => setCfg(null)); }, []);
+  useEffect(() => { getJSON("/settings/status").then(setStatus).catch(() => setStatus(null)); }, []);
   if (!cfg) return <div className="panel">Loading…</div>;
   const save = async (patch: Record<string, any>) => {
     const r = await fetch("/config", { method: "PUT",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
-    setNote(r.ok ? "saved (model changes are live; auth-mode/embedding need a restart)"
+    setNote(r.ok ? "saved (chat model is live; auth-mode/enrich need a restart)"
                  : await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
     if (r.ok) getJSON("/config").then(setCfg);
   };
@@ -339,7 +342,9 @@ function InstancePanel() {
         <input defaultValue={cfg.enrich_model}
           onBlur={(e) => e.target.value !== cfg.enrich_model && save({ enrich_model: e.target.value })} /></div>
       <div className="row"><label>Embedding</label>
-        <span className="sec">{cfg.embedding_model} / dim {cfg.embedding_dim} — change via <code>hippo reindex</code></span></div>
+        <span className="sec">{status
+          ? `${status.embedding_model} / dim ${status.embedding_dim}`
+          : "…"} — env-only, change via <code>HIPPO_EMBEDDING_*</code> + <code>hippo reindex</code></span></div>
       <div className="row"><label>Auth mode</label>
         <select defaultValue={cfg.auth_mode} onChange={(e) => save({ auth_mode: e.target.value })}>
           {["password", "oidc", "iap"].map((m) => <option key={m} value={m}>{m}</option>)}

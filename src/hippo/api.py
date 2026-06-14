@@ -893,7 +893,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         return {
             "auth_mode": cfg.get("auth_mode"),
             "chat_model": cfg.get("chat_model"),
-            "embedding_model": cfg.get("embedding_model"),
+            "embedding_model": cfg.get("embedding_model"),   # env-only (not DB-overridable)
+            "embedding_dim": settings.embedding_dim,         # env-only; reported for the UI
             "setup_complete": store.is_setup_complete(),
             "repos": {
                 "team": bool(settings.github_token and settings.github_docs_repo),
