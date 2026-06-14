@@ -26,7 +26,13 @@ agent.py       build_agent(model) -> Pydantic AI agent, deps=HubDeps(store, role
                Tool output is framed as ⟦untrusted document data⟧…⟦end⟧ (prompt-injection boundary).
                System prompt enforces cite-everything + never-improvise + untrusted-content rule. defer_model_check=True (don't remove: construction must not need API keys).
                output_validator _flag_ungrounded: server-side grounding DETECTION — logs a hippo.agent WARNING when a substantial final answer has no [path > section] citation and no no-sources marker. It does NOT raise ModelRetry (that would re-stream the rejected draft on /chat and could exhaust the retry budget on a legit empty-section citation / gpt-oss empty-content).
-api.py         build_app(settings, model_override=None): /chat streams Vercel AI protocol via VercelAIAdapter.dispatch_request
+api/           build_app(settings, model_override=None): /chat streams Vercel AI protocol via VercelAIAdapter.dispatch_request.
+               Decomposed (MED-04) from a ~770-line god-function into a package: app.py (thin build_app assembler + _McpBearerAuth),
+               context.py (AppContext + build_context dependency bundle; live_agent() rebuilds the agent when the chat_model overlay
+               changes), auth.py (importable/testable verify_request/require_admin/require_owner via make_auth_deps(ctx) + the
+               require_folder_tier/require_within_roots/require_mode_prereqs/validate_auth_switch authz helpers), models.py (request
+               schemas + _safe_filename + MIN_PASSWORD_LEN/MAX_NAME_LEN), and routes_session/account/content/admin.py. Public surface
+               unchanged: `from hippo.api import build_app` (+ _safe_filename). Live cfg.get() overlay reads preserved per request.
                (deps + usage_limits kwargs work on pydantic-ai 1.107). verify_request real: modes none|oidc|iap|password + bearer tokens every mode.
                require_admin (rank>=1) guards folder/user mutations; require_owner (rank>=2) guards owner-only ops.
                GET /me ({email,role,auth_mode,name}); PATCH /me (self-edit display name only — email is read-only login identity). /auth/login,/auth/callback,/auth/logout (oidc).
