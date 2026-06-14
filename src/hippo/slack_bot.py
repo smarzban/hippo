@@ -16,9 +16,8 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
-from pydantic_ai.usage import UsageLimits
 
-from .agent import HubDeps
+from .agent import HubDeps, usage_limits
 from .auth import AuthError, resolve_role, safe_log
 from .config import Settings
 from .storage import Storage
@@ -85,10 +84,7 @@ async def answer_question(agent, store: Storage, settings: Settings, *,
     same tool-call budget as the web chat. Any failure (including usage-limit
     hits) becomes a friendly message, never a stack trace."""
     deps = HubDeps(store=store, role=role)
-    limits = UsageLimits(
-        tool_calls_limit=settings.max_tool_calls,
-        request_limit=settings.max_tool_calls + 5,
-    )
+    limits = usage_limits(settings)
     try:
         result = await agent.run(
             question, deps=deps, message_history=history, usage_limits=limits

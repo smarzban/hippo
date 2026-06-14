@@ -14,7 +14,8 @@ from functools import partial
 import anyio
 
 from .storage import Storage
-from .tool_io import as_untrusted_data, clamp_top_k
+from .tool_io import (clamp_top_k, shape_doc_full, shape_doc_meta,
+                      shape_grep_hit, shape_search_hit)
 
 # Per-request role, set by the /mcp bearer-auth middleware (api.py) or the stdio
 # entrypoint (cli.py). None until set.
@@ -23,35 +24,19 @@ _mcp_role: ContextVar[str | None] = ContextVar("hippo_mcp_role", default=None)
 
 def mcp_search(store: Storage, role: str, query: str, top_k: int = 8) -> list[dict]:
     hits = store.search_hybrid(query, top_k=clamp_top_k(top_k), role=role)
-    return [
-        {
-            "doc_id": h.document_id,
-            "path": h.path,
-            "title": h.title,
-            "section": h.heading_path,
-            "text": as_untrusted_data(h.text),
-        }
-        for h in hits
-    ]
+    return [shape_search_hit(h) for h in hits]
 
 
 def mcp_read_document(store: Storage, role: str, doc_id: int) -> dict:
     doc = store.get_document(doc_id, role=role)
     if doc is None:
         return {"error": f"no document with id {doc_id}"}
-    return {"doc_id": doc.id, "path": doc.path, "title": doc.title,
-            "content": as_untrusted_data(doc.content)}
+    return shape_doc_full(doc)
 
 
 def mcp_list_documents(store: Storage, role: str, query: str | None = None) -> list[dict]:
-    # path/title stay raw (citation identifiers); the free-text summary is
-    # document-derived, so frame it as untrusted data like search/read/grep.
     # list_document_meta avoids materializing every doc's full content (MED-17).
-    return [
-        {"doc_id": d.id, "path": d.path, "title": d.title,
-         "summary": as_untrusted_data(d.summary) if d.summary else ""}
-        for d in store.list_document_meta(query=query, role=role)
-    ]
+    return [shape_doc_meta(d) for d in store.list_document_meta(query=query, role=role)]
 
 
 def mcp_grep(store: Storage, role: str, pattern: str) -> list[dict]:
@@ -59,11 +44,7 @@ def mcp_grep(store: Storage, role: str, pattern: str) -> list[dict]:
         hits = store.grep(pattern, role=role)
     except ValueError as e:
         return [{"error": str(e)}]
-    return [
-        {"doc_id": h.document_id, "path": h.path, "section": h.heading_path,
-         "text": as_untrusted_data(h.text)}
-        for h in hits
-    ]
+    return [shape_grep_hit(h) for h in hits]
 
 
 def build_mcp_server(store: Storage, *, require_auth: bool):

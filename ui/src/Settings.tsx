@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { flattenTree, type Folder } from "./folders";
-import { passwordChangeError } from "./auth";
+import { errorDetail, passwordChangeError } from "./auth";
 
 type Role = "user" | "admin" | "owner";
 
@@ -59,7 +59,7 @@ function ProfilePanel() {
     const r = await fetch("/me", { method: "PATCH",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
     if (r.ok) { const b = await r.json(); setSaved(b.name || ""); setName(b.name || ""); setNote("saved"); }
-    else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+    else setNote(await errorDetail(r));
   };
   return (
     <div className="panel">
@@ -143,7 +143,7 @@ function PasswordPanel() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ current: cur, new: next }) });
     if (r.ok) { setNote("password changed"); setCur(""); setNext(""); setConfirm(""); }
-    else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+    else setNote(await errorDetail(r));
   };
   return (
     <div className="panel">
@@ -174,7 +174,7 @@ function FoldersPanel() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ parent_id: parent, name }) });
     if (r.ok) { setName(""); load(); setNote(""); }
-    else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+    else setNote(await errorDetail(r));
   };
   const rename = async (id: number, current: string) => {
     const next = window.prompt("New name", current);
@@ -185,7 +185,7 @@ function FoldersPanel() {
   };
   const del = async (id: number) => {
     const r = await fetch(`/folders/${id}`, { method: "DELETE" });
-    setNote(r.ok ? "" : await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+    setNote(r.ok ? "" : await errorDetail(r));
     load();
   };
   const resync = async (id: number) => {
@@ -240,7 +240,7 @@ function UsersPanel({ authMode }: { authMode: string }) {
     const r = await fetch(`/users/${encodeURIComponent(email)}/role`, { method: "PUT",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
     if (!r.ok) {
-      const detail = await r.json().then((b) => b.detail).catch(() => `error ${r.status}`);
+      const detail = await errorDetail(r);
       setNote(detail);
     } else setNote("");
     load();   // reload reverts the dropdown if the change was refused
@@ -255,13 +255,13 @@ function UsersPanel({ authMode }: { authMode: string }) {
       setNewEmail(""); setNewName(""); setNewRole("user");
       if (b.password) setSecret({ email: b.email, pw: b.password, verb: "Initial password for" });
       load();
-    } else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+    } else setNote(await errorDetail(r));
   };
   const reset = async (email: string) => {
     const r = await fetch(`/users/${encodeURIComponent(email)}/password`, { method: "POST",
       headers: { "Content-Type": "application/json" }, body: "{}" });
     if (r.ok) { const b = await r.json(); setSecret({ email, pw: b.password, verb: "Password reset for" }); }
-    else setNote(await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+    else setNote(await errorDetail(r));
   };
   if (secret) {
     return (
@@ -330,7 +330,7 @@ function InstancePanel() {
     const r = await fetch("/config", { method: "PUT",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
     setNote(r.ok ? "saved (chat model is live; auth-mode/enrich need a restart)"
-                 : await r.json().then((b) => b.detail).catch(() => `error ${r.status}`));
+                 : await errorDetail(r));
     if (r.ok) getJSON("/config").then(setCfg);
   };
   return (

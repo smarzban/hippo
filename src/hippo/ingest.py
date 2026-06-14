@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .chunking import chunk_markdown
-from .parsers import SUPPORTED, parse_bytes, parse_content, parse_file
+from .parsers import SUPPORTED, parse_bytes, parse_file
 from .storage import Storage
 
 log = logging.getLogger("hippo.ingest")

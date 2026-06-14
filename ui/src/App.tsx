@@ -13,6 +13,7 @@ import {
   stripNoSourcesMarker,
 } from "./citations";
 import Settings from "./Settings";
+import { errorDetail } from "./auth";
 import { flattenTree, writableFolders, uploadReducer, type Folder } from "./folders";
 import {
   buildSetupPayload,
@@ -28,7 +29,7 @@ const INIT_SETUP: SetupState = {
   authMode: "password",
   ownerEmail: "",
   ownerPassword: "",
-  models: { chat_model: "", embedding_model: "", embedding_dim: 1536 },
+  models: { chat_model: "" },
 };
 
 function SetupWizard() {
@@ -137,7 +138,7 @@ function SetupWizard() {
 
           <details style={{ marginBottom: 12 }}>
             <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-              Models (optional — defaults from server env)
+              Chat model (optional — default from server env)
             </summary>
             <div style={{ marginTop: 8 }}>
               <div style={field}>
@@ -152,35 +153,10 @@ function SetupWizard() {
                   }
                 />
               </div>
-              <div style={field}>
-                <label style={label}>Embedding model</label>
-                <input
-                  type="text"
-                  placeholder="e.g. openai:text-embedding-3-small"
-                  value={state.models.embedding_model}
-                  style={{ width: "100%" }}
-                  onChange={(e) =>
-                    setState((s) => ({
-                      ...s,
-                      models: { ...s.models, embedding_model: e.target.value },
-                    }))
-                  }
-                />
-              </div>
-              <div style={field}>
-                <label style={label}>Embedding dimension</label>
-                <input
-                  type="number"
-                  value={state.models.embedding_dim}
-                  style={{ width: "100%" }}
-                  onChange={(e) =>
-                    setState((s) => ({
-                      ...s,
-                      models: { ...s.models, embedding_dim: Number(e.target.value) },
-                    }))
-                  }
-                />
-              </div>
+              <p className="sec" style={{ margin: "4px 0 0" }}>
+                Embedding model/dimension are set via <code>HIPPO_EMBEDDING_*</code> in the
+                environment (they can't change after the index is created).
+              </p>
             </div>
           </details>
 
@@ -200,7 +176,7 @@ function SetupWizard() {
   );
 }
 
-type Me = { email: string; role: string; auth_mode: string };
+type Me = { email: string; role: string; auth_mode: string; name: string };
 
 function toolLabel(name: string | undefined, input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>;
@@ -375,7 +351,7 @@ export default function App() {
       body: JSON.stringify({ email: loginEmail, password: loginPw }),
     });
     if (r.ok) window.location.reload();
-    else setLoginErr((await r.json().catch(() => ({}))).detail || "Sign-in failed.");
+    else setLoginErr(await errorDetail(r, "Sign-in failed."));
   }
 
   async function runUpload() {

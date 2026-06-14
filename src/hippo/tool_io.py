@@ -41,3 +41,27 @@ def as_untrusted_data(text: str) -> str:
     body = text.replace("⟦", "[").replace("⟧", "]")
     body = body.replace(NO_SOURCES_MARKER, "<!-- hippo:no-sources -->")
     return f"⟦untrusted document data⟧\n{body}\n⟦end⟧"
+
+
+# --- result shaping (shared by the in-app agent tools and the MCP server) ----------
+# Single-source the provenance dict shapes so the two surfaces can't drift. path/title
+# stay raw (citation identifiers the model echoes); free-text fields are framed.
+
+def shape_search_hit(h) -> dict:
+    return {"doc_id": h.document_id, "path": h.path, "title": h.title,
+            "section": h.heading_path, "text": as_untrusted_data(h.text)}
+
+
+def shape_grep_hit(h) -> dict:
+    return {"doc_id": h.document_id, "path": h.path, "section": h.heading_path,
+            "text": as_untrusted_data(h.text)}
+
+
+def shape_doc_meta(d) -> dict:
+    return {"doc_id": d.id, "path": d.path, "title": d.title,
+            "summary": as_untrusted_data(d.summary) if d.summary else ""}
+
+
+def shape_doc_full(d) -> dict:
+    return {"doc_id": d.id, "path": d.path, "title": d.title,
+            "content": as_untrusted_data(d.content)}

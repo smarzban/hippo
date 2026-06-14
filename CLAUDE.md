@@ -38,7 +38,7 @@ api.py         build_app(settings, model_override=None): /chat streams Vercel AI
                /folders: GET (role-filtered list with writable flag), POST (admin+), PATCH (rename/move, admin+), DELETE (admin+), POST /{id}/resync (admin+, folder-origin only). Allowlist via HIPPO_SOURCE_ROOTS.
                /users (admin): GET list, POST (create-user — effective-role tier guard so an admin can't mint a higher-tier login; returns a one-time password in password mode; 409 on duplicate), PUT /{email}/role with anti-lockout guard.
                /tokens: GET/POST (self-service, secret returned once), DELETE /{id} (self or admin); GET ?all=true (admin).
-               /settings/status (admin): effective auth_mode/chat_model/embedding_model (cfg.get — DB overlay wins), setup_complete flag, repo bools, counts — no secrets.
+               /settings/status (admin): effective auth_mode/chat_model/embedding_model/embedding_dim (cfg.get — DB overlay wins; embedding is env-only), setup_complete flag, mcp/slack flags, count-only doc/folder/user counts — no secrets.
                GET /setup/status (public): {setup_complete, auth_modes_available}. POST /setup (token-gated, once): wizard endpoint — sets owner, renames roots, persists operational config, marks setup complete; 409 if already complete; 403 on wrong token; validates secret env vars are present for the chosen mode.
                GET /config (owner): effective operational config for all DB_OVERRIDABLE keys (DB value else env default); never returns a secret. PUT /config (owner): upsert DB_OVERRIDABLE keys; rejects unknown/secret/env-only keys (400, incl. embedding_model/dim); auth_mode switch anti-lockout guard (_validate_auth_switch).
                Serves ui/dist as static files when HIPPO_UI_DIST is set (single origin, :8000).
@@ -70,7 +70,6 @@ db.py          connect() -> sqlite3: folder-tree schema (folders adjacency table
                Seeds three root folders on first open (Default/user, Private/admin, Owner/owner). Legacy-DB guard: raises RuntimeError("recreate the database") if documents.source_id found.
 embeddings.py  Embedder protocol; OpenAIEmbedder (default text-embedding-3-small); FakeEmbedder (deterministic, tests/offline)
 enrich.py      Enricher: doc summary + contextual line per chunk (cheap model; embedding input = context+"\n"+chunk; stored chunk text stays raw)
-github.py      GitHubContentsClient.put_file: upload-to-repo via Contents API (1 call/file)
 ingest.py      Ingestor: parse->hash dedupe->chunk->enrich->embed+index (1 txn/doc, per-file isolation);
                sync_folder(folder, store, parent_id, ...) mounts a pull-only ('folder' origin) node under parent_id, handles deletions + IGNORED_EXTENSIONS/DIRS noise filter
 parsers.py     .md/.txt/.html/.docx -> (title, canonical markdown). SUPPORTED set is the gate.
@@ -86,7 +85,7 @@ storage.py     Storage(con, embedder): ALL SQL lives here. upsert/delete/get/lis
                get_user_by_id(id)->(email,role)|None, record_failed_login(email) (increments counter; sets locked_until after LOCKOUT_MAX_FAILURES=5),
                reset_login_state(email) (clears on successful login), is_locked(email)->bool (DB-clock comparison).
                LOCKOUT_MAX_FAILURES=5, LOCKOUT_MINUTES=15 (class constants; hardcoded defaults). password_hash is never returned by any API endpoint.
-               Config store (SP3): get_config(key)->str|None, set_config(key, value) (upsert), all_config()->dict,
+               Config store (SP3): get_config(key)->str|None, set_config(key, value) (upsert),
                is_setup_complete()->bool (setup_complete key == "1"), mark_setup_complete(), document_count()->int.
                Role-filtered retrieval: search_hybrid/grep/list_documents/get_document take keyword-only `role` with NO default.
                _role_filter(role) -> SQL fragment + params using readable_min_roles() from roles.py (the single definition of rank logic).
