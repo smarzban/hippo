@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     chat_model: str = "openai:gpt-5.2"
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
+    embed_timeout_s: float = 60.0   # per-request bound on the embedding endpoint (SDK default is 600s)
+    embed_max_retries: int = 2      # embedding client retry budget on transient failures
     enrich_enabled: bool = True
     enrich_model: str = "openai:gpt-5-mini"
     chunk_max_chars: int = 3000  # ~750 tokens
@@ -62,18 +64,18 @@ def get_settings() -> Settings:
 
 
 # Operational keys the DB config store may override (env supplies the default).
-# Everything NOT here — provider keys, oidc_client_secret, secret_key, db_path,
-# setup_token, github_*, source_roots — is ENV-ONLY and never read from the DB.
+# Everything NOT here is ENV-ONLY and never read from the DB:
+#   - secrets/bootstrap: provider keys, oidc_client_secret, secret_key, db_path,
+#     setup_token, github_*, source_roots;
+#   - embedding_model / embedding_dim: these define the vector space and the
+#     chunk_vec table width, which is fixed at table creation and only changeable
+#     via `hippo reindex` (a CLI op that reads env). A DB override could not take
+#     effect AND could silently go stale relative to env after a reindex, so the
+#     embedder is the single source of truth — they stay env-only.
 DB_OVERRIDABLE: frozenset[str] = frozenset({
-    "auth_mode", "chat_model", "enrich_model", "embedding_model", "embedding_dim",
+    "auth_mode", "chat_model", "enrich_model",
     "allowed_domain", "oidc_client_id", "public_url", "iap_audience",
 })
-
-_INT_KEYS = frozenset({"embedding_dim"})
-
-
-def _coerce(key: str, value: str):
-    return int(value) if key in _INT_KEYS else value
 
 
 class Config:
@@ -89,5 +91,5 @@ class Config:
         if key in DB_OVERRIDABLE:
             v = self.store.get_config(key)
             if v is not None:
-                return _coerce(key, v)
+                return v
         return getattr(self.settings, key)

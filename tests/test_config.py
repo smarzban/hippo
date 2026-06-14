@@ -95,9 +95,10 @@ def test_config_overlay_db_overrides_env_for_operational_keys(tmp_path):
     # a secret/env-only key is NEVER sourced from the DB
     store.set_config("github_token", "DB-LEAK")
     assert cfg.get("github_token") == "SECRET"           # still env
-    # embedding_dim is coerced to int
+    # embedding_model/dim are env-only (MED-07): a DB row must NOT override them
+    assert "embedding_dim" not in DB_OVERRIDABLE and "embedding_model" not in DB_OVERRIDABLE
     store.set_config("embedding_dim", "768")
-    assert cfg.get("embedding_dim") == 768
+    assert cfg.get("embedding_dim") == 1536              # still the env Settings default, not 768
 
 
 def test_setup_token_is_an_env_only_setting(tmp_path):

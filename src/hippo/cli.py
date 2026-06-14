@@ -211,18 +211,23 @@ def slack():
         typer.echo("Missing Slack tokens: set HIPPO_SLACK_BOT_TOKEN and "
                    "HIPPO_SLACK_APP_TOKEN.", err=True)
         raise typer.Exit(code=1)
-    if not settings.allowed_domain:
-        # The Slack bot is reachable by the whole workspace (incl. guests). Without
-        # a domain gate, every Slack profile email is auto-provisioned as developer
-        # and can query everyone-access docs. Strongly recommend setting it.
-        typer.echo("WARNING: HIPPO_ALLOWED_DOMAIN is unset — every Slack workspace "
-                   "user (including guests) can query Hippo. Set it to your work "
-                   "domain (e.g. superbalist.com) to gate access.", err=True)
-
     con = connect(settings.db_path, embedding_dim=settings.embedding_dim)
     store = Storage(con, build_embedder(settings))
-    agent = build_agent(settings.chat_model)
-    slack_app = build_slack_app(store, agent, settings)
+    # Resolve operational config through the DB overlay (parity with the HTTP surface):
+    # a chat_model / allowed_domain set via the wizard or PUT /config applies to Slack too.
+    from .config import Config
+    cfg = Config(settings, store)
+    effective_domain = cfg.get("allowed_domain")
+    if not effective_domain:
+        # The Slack bot is reachable by the whole workspace (incl. guests). Without
+        # a domain gate, every Slack profile email is auto-provisioned as a user
+        # and can query user-tier docs. Strongly recommend setting it.
+        typer.echo("WARNING: allowed_domain is unset — every Slack workspace "
+                   "user (including guests) can query Hippo. Set HIPPO_ALLOWED_DOMAIN "
+                   "(or the config overlay) to your work domain to gate access.", err=True)
+
+    agent = build_agent(cfg.get("chat_model"))
+    slack_app = build_slack_app(store, agent, settings, allowed_domain=effective_domain)
 
     async def _run():
         # AsyncSocketModeHandler opens an aiohttp session in its constructor, which
