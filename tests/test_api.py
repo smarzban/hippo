@@ -70,8 +70,8 @@ def test_ingest_with_enrichment_enabled(tmp_path, monkeypatch):
     """Enricher.run_sync must work from API routes (event loop already running)."""
     from hippo.enrich import Enricher
 
-    monkeypatch.setattr(
-        "hippo.api.Enricher", lambda model: Enricher(TestModel(custom_output_text="ctx line"))
+    monkeypatch.setattr(  # Enricher is constructed in build_context (MED-04 api split)
+        "hippo.api.context.Enricher", lambda model: Enricher(TestModel(custom_output_text="ctx line"))
     )
     settings = _settings(tmp_path, enrich_enabled=True)
     app = build_app(settings, model_override=TestModel(custom_output_text="hi"))
