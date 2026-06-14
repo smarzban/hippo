@@ -458,6 +458,46 @@ def test_lockout_after_max_failures_then_reset(store):
     assert store.is_locked("eve@x.com") is False
 
 
+def test_lockout_auto_expires_and_counter_decays(store):
+    """MED-20: the lock auto-expires once locked_until passes (the core promised
+    behavior, previously untested). LOW-15: an elapsed window also decays the failure
+    counter, so the account isn't permanently soft-locked (re-locked on the next single
+    failure)."""
+    store.set_password("late@x.com", "h")
+    for _ in range(LOCKOUT_MAX):
+        store.record_failed_login("late@x.com")
+    assert store.is_locked("late@x.com") is True
+    # force the window into the PAST (failure counter still maxed)
+    with store.con:
+        store.con.execute(
+            "UPDATE users SET locked_until=datetime('now','-1 minute') WHERE email=?",
+            ("late@x.com",))
+    assert store.is_locked("late@x.com") is False                          # auto-expired
+    assert store.get_credentials("late@x.com")["failed_logins"] >= LOCKOUT_MAX  # not yet decayed
+    store.clear_lock_if_expired("late@x.com")                              # LOW-15 decay
+    creds = store.get_credentials("late@x.com")
+    assert creds["failed_logins"] == 0 and creds["locked_until"] is None
+    # a fresh single failure now starts the count at 1 — not an instant re-lock
+    store.record_failed_login("late@x.com")
+    assert store.is_locked("late@x.com") is False
+    assert store.get_credentials("late@x.com")["failed_logins"] == 1
+
+
+def test_retrieval_methods_require_role_keyword(store):
+    """LOW-38: pin the access-control invariant — search_hybrid/grep/list_documents/
+    get_document take `role` keyword-only with NO default, so a forgotten call site is a
+    loud TypeError, never a silent low-privilege read. A refactor adding a default would
+    fail here instead of leaking."""
+    with pytest.raises(TypeError):
+        store.search_hybrid("q")
+    with pytest.raises(TypeError):
+        store.grep("q")
+    with pytest.raises(TypeError):
+        store.list_documents()
+    with pytest.raises(TypeError):
+        store.get_document(1)
+
+
 def test_config_get_set_and_setup_flag(store):
     assert store.get_config("chat_model") is None
     store.set_config("chat_model", "openai:gpt-5.2")
