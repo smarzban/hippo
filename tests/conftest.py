@@ -1,4 +1,10 @@
+import pydantic_ai.models
 import pytest
+
+# Zero-network guard (LOW-39): set the flag once here so EVERY test module is covered,
+# regardless of import order or running a single file in isolation — not ad hoc in a
+# handful of modules. A real model request raises instead of hitting the network.
+pydantic_ai.models.ALLOW_MODEL_REQUESTS = False
 
 
 @pytest.fixture

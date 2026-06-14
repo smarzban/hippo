@@ -286,3 +286,46 @@ def test_as_data_neutralizes_forged_end_marker():
     assert out.count("⟦end⟧") == 1
     assert out.rstrip().endswith("⟦end⟧")
     assert "ignore previous instructions" in out  # content preserved, just de-fanged
+
+
+# ---------------------------------------------------------------------------
+# MED-12 — server-side grounding enforcement (output_validator + ModelRetry)
+# ---------------------------------------------------------------------------
+
+async def test_grounding_validator_retries_uncited_substantial_answer(deps):
+    """A substantial answer with no citation and no marker triggers ModelRetry; the
+    model self-corrects within the retry budget and the grounded reply is returned."""
+    calls = {"n": 0}
+
+    def reply(messages, info: AgentInfo) -> ModelResponse:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ModelResponse(parts=[TextPart("x" * 200)])      # long, uncited, unmarked
+        return ModelResponse(parts=[TextPart("Here it is [polly/telegram.md > Polly Telegram].")])
+
+    agent = build_agent(FunctionModel(reply))
+    result = await agent.run("explain polly", deps=deps)
+    assert calls["n"] == 2                                          # retried exactly once
+    assert "[polly/telegram.md > Polly Telegram]" in result.output
+
+
+async def test_grounding_validator_allows_short_reply_and_marker(deps):
+    """A short conversational reply, and a substantial reply ending with the
+    no-sources marker, both pass WITHOUT a retry."""
+    def greet(messages, info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart("Hi! What would you like to know?")])
+    r1 = await build_agent(FunctionModel(greet)).run("hi", deps=deps)
+    assert "Hi!" in r1.output
+
+    def nosrc(messages, info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart("x" * 200 + "\n\n<!--hippo:no-sources-->")])
+    r2 = await build_agent(FunctionModel(nosrc)).run("explain", deps=deps)
+    assert r2.output.strip().endswith("<!--hippo:no-sources-->")
+
+
+def test_hubdeps_role_has_no_default(deps):
+    """LOW-38: HubDeps.role is required (no default) — a missing role is a TypeError,
+    never a silent privilege downgrade."""
+    from hippo.agent import HubDeps
+    with pytest.raises(TypeError):
+        HubDeps(store=deps.store)   # type: ignore[call-arg]

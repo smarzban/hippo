@@ -1,9 +1,17 @@
+import re
 from dataclasses import dataclass
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, ModelRetry, RunContext
 
 from .storage import Storage
-from .tool_io import as_untrusted_data, clamp_top_k
+from .tool_io import NO_SOURCES_MARKER, as_untrusted_data, clamp_top_k
+
+# A grounded answer cites at least one source as [path > section]; an answer the
+# knowledge base can't support ends with the no-sources marker. Replies shorter than
+# this are treated as conversational (greeting/clarification) and require neither, so
+# the grounding check never forces a citation onto "Hi, what can I help with?".
+GROUNDING_MIN_CHARS = 120
+_CITATION_RE = re.compile(r"\[[^\[\]\n]+ > [^\[\]\n]+\]")
 
 SYSTEM_PROMPT = """You are Hippo, the team's knowledge base — a sharp, friendly teammate who knows the
 team's docs inside out. You answer ONLY from the indexed documents, found via your tools.
@@ -124,5 +132,26 @@ def build_agent(model) -> Agent[HubDeps, str]:
             {"doc_id": h.document_id, "path": h.path, "section": h.heading_path, "text": _as_data(h.text)}
             for h in hits
         ]
+
+    @agent.output_validator
+    def _require_grounding(ctx: RunContext[HubDeps], text: str) -> str:
+        """Server-side grounding enforcement (the SYSTEM_PROMPT rule alone is not
+        enough — and the UI's client-side warning is advisory only). A substantial
+        answer must either cite a source as [path > section] or end with the
+        no-sources marker; otherwise self-correct via ModelRetry within the agent's
+        retry budget. Only the final complete output is checked — streamed partials
+        (ctx.partial_output) and short conversational replies are left alone."""
+        if ctx.partial_output:
+            return text
+        stripped = text.strip()
+        if (len(stripped) <= GROUNDING_MIN_CHARS
+                or stripped.endswith(NO_SOURCES_MARKER)
+                or _CITATION_RE.search(text)):
+            return text
+        raise ModelRetry(
+            "Your answer makes claims but cites no sources. Cite each claim as "
+            "[path > section] using the exact path and section returned by your tools; "
+            "or, if the knowledge base does not contain the answer, end your reply with "
+            "the exact marker <!--hippo:no-sources-->.")
 
     return agent

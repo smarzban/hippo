@@ -1,4 +1,8 @@
+import logging
+
 from pydantic_ai import Agent
+
+log = logging.getLogger("hippo.enrich")
 
 SUMMARY_PROMPT = (
     "Write a single-paragraph summary (max 80 words) of the document below. "
@@ -24,10 +28,23 @@ class Enricher:
             defer_model_check=True,
         )
 
+    def _run(self, prompt: str, *, what: str) -> str:
+        """Run the enrichment model, best-effort. Enrichment is an optimization, not a
+        requirement — a document still indexes with its raw text. An empty/blank model
+        response (a documented gpt-oss quirk) makes pydantic-ai retry then raise
+        UnexpectedModelBehavior; a rate limit / timeout raises too. None of those must
+        fail the document's ingestion, so degrade to no enrichment ("") and log it (LOW-43)."""
+        try:
+            return (self._agent.run_sync(prompt).output or "").strip()
+        except Exception as e:  # best-effort: never let enrichment abort an ingest
+            log.warning("enrichment (%s) failed, continuing without it: %s", what, e)
+            return ""
+
     def summarize(self, title: str, content: str) -> str:
-        prompt = SUMMARY_PROMPT.format(title=title, content=content[:20000])
-        return self._agent.run_sync(prompt).output.strip()
+        return self._run(SUMMARY_PROMPT.format(title=title, content=content[:20000]),
+                         what="summary")
 
     def contextualize(self, title: str, section: str, chunk: str) -> str:
-        prompt = CONTEXT_PROMPT.format(title=title, section=section or "(top)", chunk=chunk[:4000])
-        return self._agent.run_sync(prompt).output.strip()
+        return self._run(
+            CONTEXT_PROMPT.format(title=title, section=section or "(top)", chunk=chunk[:4000]),
+            what="context")

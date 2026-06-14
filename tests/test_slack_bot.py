@@ -239,7 +239,10 @@ def _listing_agent():
         for m in messages:
             for part in getattr(m, "parts", []):
                 if isinstance(part, ToolReturnPart) and part.tool_name == "list_documents":
-                    return MR(parts=[TP(content=str(part.content))])
+                    # Echo the tool result WITH a citation so the grounding
+                    # output_validator treats it as a grounded answer (the test cares
+                    # about role-filtered content, not the citation itself).
+                    return MR(parts=[TP(content=f"{part.content}\n\n[docs > index]")])
         return MR(parts=[ToolCallPart(tool_name="list_documents", args={})])
     return build_agent(FunctionModel(reply))
 

@@ -527,6 +527,19 @@ class Storage:
             ).fetchone()
         return bool(row and row[0])
 
+    def clear_lock_if_expired(self, email: str) -> None:
+        """If a lockout window has elapsed, reset the failure counter so the next
+        attempt starts fresh. Without this the counter never decays: a once-locked
+        account stays at failed_logins=5, so the very first post-expiry failure
+        re-locks it immediately — effectively a permanent soft-lock (LOW-15)."""
+        email = _norm_email(email)
+        with self._lock, self.con:
+            self.con.execute(
+                "UPDATE users SET failed_logins=0, locked_until=NULL "
+                "WHERE email=? AND locked_until IS NOT NULL AND locked_until <= datetime('now')",
+                (email,),
+            )
+
     # -- personal access tokens ---------------------------------------------
 
     def create_token_returning_id(self, email: str, name: str = "") -> tuple[int, str]:
