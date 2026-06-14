@@ -790,7 +790,6 @@ class Storage:
         all embeddings succeed. Returns the number of chunks re-embedded."""
         with self._lock:
             rows = self.con.execute("SELECT id, text FROM chunks ORDER BY id").fetchall()
-        snapshot_ids = [cid for cid, _ in rows]
         new_vectors: list[tuple[int, bytes]] = []
         for i in range(0, len(rows), batch):
             part = rows[i : i + batch]
@@ -805,11 +804,14 @@ class Storage:
         with self._lock, self.con:  # atomic swap, only reached if all embeds succeeded
             # Detect a concurrent ingest during the (unlocked) embedding window: if the
             # chunk set changed, the snapshot is stale — rebuilding chunk_vec from it
-            # would strand the new chunks with no vector (silent retrieval gap, MED-06).
-            # Abort BEFORE the DROP so the existing index stays intact; the operator
-            # re-runs reindex with no concurrent sync/upload.
-            current_ids = [r[0] for r in self.con.execute("SELECT id FROM chunks ORDER BY id")]
-            if current_ids != snapshot_ids:
+            # would strand new chunks with no vector (silent retrieval gap, MED-06).
+            # Compare full (id, text), not just ids: an update deletes+reinserts a doc's
+            # chunks and SQLite can REUSE the freed rowids, so the id set can be unchanged
+            # while the text differs — embedding old text under reused ids. Abort BEFORE
+            # the DROP so the existing index stays intact; the operator re-runs reindex
+            # with no concurrent sync/upload.
+            current = self.con.execute("SELECT id, text FROM chunks ORDER BY id").fetchall()
+            if current != rows:
                 raise ValueError(
                     "documents changed during reindex (concurrent ingest detected); the "
                     "vector index was left untouched — re-run `hippo reindex` with no "

@@ -618,3 +618,27 @@ def test_reindex_aborts_on_concurrent_chunk_change(store):
         store.reindex(32)
     # the original vector index is left intact (abort happened before the DROP)
     assert store.search_hybrid("alpha", top_k=3, role="owner")
+
+
+def test_reindex_aborts_on_concurrent_text_change_same_ids(store):
+    """Codex review (PR-5): comparing only chunk IDS misses a delete+reinsert with
+    SQLite rowid reuse (same id set, different text) — which would embed stale text
+    under reused ids. reindex compares (id, text), so a text change during the embed
+    window also aborts."""
+    _add(store, "a.md", "alpha", _user_root_id(store))
+
+    class _TextMutatingEmbedder:
+        model, dim = "fake", 32
+        def __init__(self, s): self._s, self._fired = s, False
+        def embed(self, texts):
+            if not self._fired:                              # mutate text, keep id set
+                self._fired = True
+                with self._s.con:
+                    self._s.con.execute(
+                        "UPDATE chunks SET text='REPLACED' "
+                        "WHERE id=(SELECT min(id) FROM chunks)")
+            return FakeEmbedder(dim=32).embed(texts)
+
+    store.embedder = _TextMutatingEmbedder(store)
+    with pytest.raises(ValueError, match="changed during reindex"):
+        store.reindex(32)
