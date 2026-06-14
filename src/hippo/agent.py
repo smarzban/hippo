@@ -1,9 +1,22 @@
+import logging
+import re
 from dataclasses import dataclass
 
 from pydantic_ai import Agent, RunContext
 
 from .storage import Storage
-from .tool_io import as_untrusted_data, clamp_top_k
+from .tool_io import NO_SOURCES_MARKER, as_untrusted_data, clamp_top_k
+
+log = logging.getLogger("hippo.agent")
+
+# A grounded answer cites at least one source as [path > section]; an answer the
+# knowledge base can't support ends with the no-sources marker. Replies shorter than
+# this are treated as conversational (greeting/clarification) and require neither, so
+# the grounding check never flags "Hi, what can I help with?".
+GROUNDING_MIN_CHARS = 120
+# Section may be empty: a chunk before any heading has heading_path "" and is legitimately
+# cited as [path > ] straight from tool output — that must count as grounded, not flagged.
+_CITATION_RE = re.compile(r"\[[^\[\]\n]+ > [^\[\]\n]*\]")
 
 SYSTEM_PROMPT = """You are Hippo, the team's knowledge base — a sharp, friendly teammate who knows the
 team's docs inside out. You answer ONLY from the indexed documents, found via your tools.
@@ -124,5 +137,31 @@ def build_agent(model) -> Agent[HubDeps, str]:
             {"doc_id": h.document_id, "path": h.path, "section": h.heading_path, "text": _as_data(h.text)}
             for h in hits
         ]
+
+    @agent.output_validator
+    def _flag_ungrounded(ctx: RunContext[HubDeps], text: str) -> str:
+        """Server-side grounding DETECTION. The SYSTEM_PROMPT requires every answer to
+        cite [path > section] or end with the no-sources marker; this logs a WARNING
+        (hippo.agent) when a substantial final answer does neither — giving operators
+        server-side visibility the UI's advisory, client-bypassable warning can't.
+
+        It deliberately does NOT raise ModelRetry. On the streaming /chat path the
+        answer is streamed to the client token-by-token BEFORE this validator runs, so
+        a retry would (a) re-stream a second answer on top of the rejected draft the
+        user already saw, and (b) share the output-retry budget with the documented
+        gpt-oss empty-content quirk — so a couple of empty responses, or a legitimate
+        empty-section citation, could exhaust the budget and brick a valid reply.
+        Hard self-correction would require buffering the whole /chat response (dropping
+        streaming); detection + the prompt rule + the client warning are the layers."""
+        if ctx.partial_output:
+            return text
+        stripped = text.strip()
+        if (len(stripped) <= GROUNDING_MIN_CHARS
+                or stripped.endswith(NO_SOURCES_MARKER)
+                or _CITATION_RE.search(text)):
+            return text
+        log.warning("ungrounded answer surfaced: %d chars, no [path > section] citation "
+                    "and no no-sources marker", len(stripped))
+        return text
 
     return agent

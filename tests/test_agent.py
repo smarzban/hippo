@@ -286,3 +286,60 @@ def test_as_data_neutralizes_forged_end_marker():
     assert out.count("⟦end⟧") == 1
     assert out.rstrip().endswith("⟦end⟧")
     assert "ignore previous instructions" in out  # content preserved, just de-fanged
+
+
+# ---------------------------------------------------------------------------
+# MED-12 — server-side grounding DETECTION (output_validator logs, does NOT retry).
+# ModelRetry was evaluated and rejected: on the streaming /chat path it would re-stream
+# the rejected draft and could exhaust the retry budget (empty-section citations /
+# gpt-oss empty-content) and brick a valid reply. So we log + leave the output intact.
+# ---------------------------------------------------------------------------
+
+async def test_ungrounded_answer_is_logged_not_retried(deps, caplog):
+    """A substantial answer with no citation and no marker is LOGGED as ungrounded,
+    NOT retried (so streaming is never disrupted and the retry budget is never spent)."""
+    import logging
+    calls = {"n": 0}
+
+    def reply(messages, info: AgentInfo) -> ModelResponse:
+        calls["n"] += 1
+        return ModelResponse(parts=[TextPart("x" * 200)])          # long, uncited, unmarked
+
+    agent = build_agent(FunctionModel(reply))
+    with caplog.at_level(logging.WARNING, logger="hippo.agent"):
+        result = await agent.run("explain polly", deps=deps)
+    assert calls["n"] == 1                                          # NO retry
+    assert result.output == "x" * 200                              # output left intact
+    assert any("ungrounded answer" in r.getMessage() for r in caplog.records)
+
+
+async def test_grounding_detection_allows_citation_marker_short_and_empty_section(deps, caplog):
+    """A citation (incl. an empty-section [path > ] from a pre-heading chunk), the
+    no-sources marker, and short conversational replies all pass WITHOUT a warning."""
+    import logging
+
+    async def run_text(text: str):
+        def reply(messages, info: AgentInfo) -> ModelResponse:
+            return ModelResponse(parts=[TextPart(text)])
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="hippo.agent"):
+            r = await build_agent(FunctionModel(reply)).run("q", deps=deps)
+        warned = any("ungrounded" in rec.getMessage() for rec in caplog.records)
+        return r.output, warned
+
+    out, warned = await run_text("Hi! What would you like to know?")     # short greeting
+    assert "Hi!" in out and not warned
+    _, warned = await run_text("x" * 200 + " [polly/telegram.md > Polly Telegram]")
+    assert not warned                                                    # normal citation
+    _, warned = await run_text("x" * 200 + " [polly/telegram.md > ]")    # empty-section cite
+    assert not warned
+    out, warned = await run_text("x" * 200 + "\n\n<!--hippo:no-sources-->")
+    assert out.strip().endswith("<!--hippo:no-sources-->") and not warned
+
+
+def test_hubdeps_role_has_no_default(deps):
+    """LOW-38: HubDeps.role is required (no default) — a missing role is a TypeError,
+    never a silent privilege downgrade."""
+    from hippo.agent import HubDeps
+    with pytest.raises(TypeError):
+        HubDeps(store=deps.store)   # type: ignore[call-arg]

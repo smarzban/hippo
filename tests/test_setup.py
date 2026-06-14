@@ -46,10 +46,13 @@ def test_setup_status_public_and_setup_token_gate(tmp_path):
     assert st.status_code == 200
     assert st.json()["setup_complete"] is False
     assert set(st.json()["auth_modes_available"]) == {"password", "oidc", "iap"}  # no 'none'
-    # wrong/absent token rejected
-    assert c.post("/setup", json={"token": "nope", "auth_mode": "password",
-                                  "owner_email": "o@x.com", "owner_password": "ownerpass1",
-                                  "models": {}}).status_code in (401, 403)
+    # wrong/absent token rejected — deterministically 403 (forbidden), not 401 (LOW-41):
+    # the endpoint returns 403 'invalid setup token', and a regression to 401 (which some
+    # clients treat as "retry login") would be a different security semantic.
+    r = c.post("/setup", json={"token": "nope", "auth_mode": "password",
+                               "owner_email": "o@x.com", "owner_password": "ownerpass1",
+                               "models": {}})
+    assert r.status_code == 403 and "token" in r.json()["detail"].lower()
 
 
 def test_password_setup_happy_path(tmp_path):
@@ -125,6 +128,17 @@ def test_auth_switch_blocked_when_owner_lacks_target_credential(tmp_path):
     c = TestClient(app)
     r = c.put("/config", json={"auth_mode": "password"})
     assert r.status_code == 400 and "password" in r.json()["detail"].lower()
+
+
+def test_auth_switch_to_none_is_rejected(tmp_path):
+    """LOW-42: re-opening a secured instance by switching auth_mode to the open 'none'
+    mode is the most dangerous downgrade — it must be explicitly refused (only
+    password/oidc/iap are valid switch targets)."""
+    c = TestClient(build_app(_settings(tmp_path, secret_key="k")))
+    r = c.put("/config", json={"auth_mode": "none"})
+    assert r.status_code == 400
+    detail = r.json()["detail"].lower()
+    assert "password" in detail and "oidc" in detail and "iap" in detail
 
 
 def test_auth_switch_to_password_allowed_once_owner_has_password(tmp_path):
