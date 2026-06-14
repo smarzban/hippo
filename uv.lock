@@ -1085,6 +1085,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "anyio" },
     { name = "argon2-cffi" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -1115,6 +1116,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9" },
+    { name = "anyio", specifier = ">=4.5" },
     { name = "argon2-cffi", specifier = ">=23.1.0" },
     { name = "fastapi", specifier = ">=0.136.3" },
     { name = "httpx", specifier = ">=0.28.1" },

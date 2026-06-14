@@ -561,7 +561,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     async def documents(query: str | None = None, user: AuthenticatedUser = Depends(verify_request)):
         return [
             {"id": d.id, "path": d.path, "title": d.title, "summary": d.summary}
-            for d in store.list_documents(query=query, role=user.role)
+            for d in store.list_document_meta(query=query, role=user.role)
         ]
 
     @app.get("/documents/{doc_id}")
@@ -945,8 +945,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             "mcp_enabled": settings.mcp_enabled,
             "slack_enabled": settings.slack_enabled,
             "counts": {
-                "documents": len(store.list_documents(role="owner")),
-                "folders": len(store.list_folders(role="owner")),
+                # count-only queries — don't materialize the whole corpus just to len() it (LOW-33)
+                "documents": store.document_count(),
+                "folders": store.folder_count(),
                 "users": len(store.list_users()),
             },
         }

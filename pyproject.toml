@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic-ai>=1.107.0",
     "pydantic-settings>=2.14.1",
+    "anyio>=4.5",  # mcp_server.py offloads blocking tool calls via anyio.to_thread (direct import)
     "fastapi>=0.136.3",
     "uvicorn>=0.49.0",
     "sqlite-vec>=0.1.9",
