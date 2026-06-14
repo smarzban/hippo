@@ -24,7 +24,8 @@ roles.py       ROLE_RANK / VALID_ROLES / DEFAULT_ROLE ("user"). Pure helpers: ra
                Single source of truth for the rank comparison — no imports from the rest of hippo. Everything else imports from here.
 agent.py       build_agent(model) -> Pydantic AI agent, deps=HubDeps(store, role). 4 tools: search/read_document/list_documents/grep.
                Tool output is framed as ⟦untrusted document data⟧…⟦end⟧ (prompt-injection boundary).
-               System prompt enforces cite-everything + never-improvise + untrusted-content rule. defer_model_check=True (don't remove: construction must not need API keys)
+               System prompt enforces cite-everything + never-improvise + untrusted-content rule. defer_model_check=True (don't remove: construction must not need API keys).
+               output_validator _flag_ungrounded: server-side grounding DETECTION — logs a hippo.agent WARNING when a substantial final answer has no [path > section] citation and no no-sources marker. It does NOT raise ModelRetry (that would re-stream the rejected draft on /chat and could exhaust the retry budget on a legit empty-section citation / gpt-oss empty-content).
 api.py         build_app(settings, model_override=None): /chat streams Vercel AI protocol via VercelAIAdapter.dispatch_request
                (deps + usage_limits kwargs work on pydantic-ai 1.107). verify_request real: modes none|oidc|iap|password + bearer tokens every mode.
                require_admin (rank>=1) guards folder/user mutations; require_owner (rank>=2) guards owner-only ops.
