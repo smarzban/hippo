@@ -425,13 +425,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         # mode that would be unusable / brick on the next restart.
         _require_mode_prereqs(mode, oidc_client_id=oidc.get("client_id"),
                               iap_audience=body.get("iap_audience"))
-        # reject a non-int-coercible embedding_dim before any side effects
-        if "embedding_dim" in models and models["embedding_dim"] not in (None, ""):
-            try:
-                int(models["embedding_dim"])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400,
-                    detail="embedding_dim must be an integer")
+        # embedding_model/dim are env-only (the vector space + chunk_vec width are
+        # fixed at table creation; changing them needs `hippo reindex`). The wizard
+        # may still send them, but we never persist them to the overlay — the env-built
+        # embedder is the single source of truth, so the config can never go stale (MED-07).
         # atomic claim: only the first concurrent request proceeds; a racing second
         # valid request loses here and gets a 409 (no double-owner creation).
         if not store.claim_setup():
@@ -453,12 +450,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         # persist operational config (DB-overridable keys only). The setup_complete
         # flag was already set atomically by claim_setup() above.
         store.set_config("auth_mode", mode)
-        # embedding_model/dim only persisted on a fresh index (parity with PUT /config:
-        # chunk_vec dim is fixed once documents exist). Normally moot — setup runs fresh.
-        persist_embed = store.document_count() == 0
-        for k in ("chat_model", "enrich_model", "embedding_model", "embedding_dim"):
-            if k in ("embedding_model", "embedding_dim") and not persist_embed:
-                continue
+        # Only DB-overridable model keys are persisted. embedding_model/dim are
+        # env-only (see MED-07) and deliberately NOT written, even if the wizard sent them.
+        for k in ("chat_model", "enrich_model"):
             if k in models and models[k] not in (None, ""):
                 store.set_config(k, str(models[k]))
         for k_body, k_cfg in (("client_id", "oidc_client_id"), ("public_url", "public_url")):
@@ -839,21 +833,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         body = await request.json()
         for key in body:
             if key not in DB_OVERRIDABLE:
+                # embedding_model/dim land here too: they are env-only (MED-07), so a
+                # PUT that tries to set them is rejected as non-overridable.
                 raise HTTPException(status_code=400,
                     detail=f"{key!r} is not a settable operational key (secrets/env-only keys are rejected)")
-        # reject a non-int-coercible embedding_dim now (else it surfaces as a 500
-        # later inside Config._coerce when the overlay is read)
-        if "embedding_dim" in body:
-            try:
-                int(body["embedding_dim"])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400,
-                    detail="embedding_dim must be an integer")
-        # embedding model/dim cannot change once documents exist (chunk_vec dim is fixed)
-        if ("embedding_model" in body or "embedding_dim" in body) and store.document_count() > 0:
-            raise HTTPException(status_code=409,
-                detail="embedding_model/embedding_dim can't change after documents exist — "
-                       "run `hippo reindex` (CLI) to re-embed")
         if "auth_mode" in body:
             # consider oidc_client_id/iap_audience set in this SAME request when
             # validating prereqs for the target mode.
@@ -910,7 +893,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         return {
             "auth_mode": cfg.get("auth_mode"),
             "chat_model": cfg.get("chat_model"),
-            "embedding_model": cfg.get("embedding_model"),
+            "embedding_model": cfg.get("embedding_model"),   # env-only (not DB-overridable)
+            "embedding_dim": settings.embedding_dim,         # env-only; reported for the UI
             "setup_complete": store.is_setup_complete(),
             "repos": {
                 "team": bool(settings.github_token and settings.github_docs_repo),

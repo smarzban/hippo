@@ -171,6 +171,22 @@ async def test_handle_out_of_domain_is_refused(tmp_path):
     assert not client.updated   # never ran the agent
 
 
+async def test_handle_effective_domain_gates_even_when_env_unset(tmp_path):
+    """MED-03: the EFFECTIVE allowed_domain (DB overlay, threaded in by cli.py) must
+    gate the Slack surface even when settings.allowed_domain is empty — otherwise a
+    domain set via the wizard / PUT /config applies to web+MCP but not to Slack."""
+    client = FakeSlack(email="outsider@gmail.com")
+    await handle_event(
+        {"user": "UX", "channel": "D1", "ts": "1.0", "text": "hi"},
+        client, store=_store(tmp_path), agent=_fixed_agent(),
+        settings=Settings(_env_file=None),     # env domain UNSET
+        bot_user_id="UBOT", is_dm=True,
+        allowed_domain="example.com",      # overlay value passed by cli.py
+    )
+    assert "don't have access" in client.posted[0]["text"].lower()
+    assert not client.updated   # never ran the agent
+
+
 async def test_handle_ignores_bot_messages(tmp_path):
     client = FakeSlack()
     await handle_event(
