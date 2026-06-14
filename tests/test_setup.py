@@ -93,7 +93,7 @@ def test_config_get_put_owner_only_and_secrets_protected(tmp_path):
     got = c.get("/config")
     assert got.status_code == 200
     assert "chat_model" in got.json() and "secret_key" not in got.json() \
-        and "github_token" not in got.json()
+        and "oidc_client_secret" not in got.json()
     # set an operational key
     assert c.put("/config", json={"chat_model": "ollama:llama3"}).status_code == 200
     assert app.state.store.get_config("chat_model") == "ollama:llama3"

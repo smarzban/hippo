@@ -85,7 +85,7 @@ def test_config_overlay_db_overrides_env_for_operational_keys(tmp_path):
     from hippo.embeddings import FakeEmbedder
     from hippo.storage import Storage
 
-    s = Settings(_env_file=None, chat_model="env-model", github_token="SECRET")
+    s = Settings(_env_file=None, chat_model="env-model", oidc_client_secret="SECRET")
     store = Storage(connect(tmp_path / "t.db", embedding_dim=32), FakeEmbedder(dim=32))
     cfg = Config(s, store)
     assert cfg.get("chat_model") == "env-model"          # env default
@@ -93,8 +93,8 @@ def test_config_overlay_db_overrides_env_for_operational_keys(tmp_path):
     assert cfg.get("chat_model") == "db-model"           # DB overrides
     assert "chat_model" in DB_OVERRIDABLE
     # a secret/env-only key is NEVER sourced from the DB
-    store.set_config("github_token", "DB-LEAK")
-    assert cfg.get("github_token") == "SECRET"           # still env
+    store.set_config("oidc_client_secret", "DB-LEAK")
+    assert cfg.get("oidc_client_secret") == "SECRET"     # still env
     # embedding_model/dim are env-only (MED-07): a DB row must NOT override them
     assert "embedding_dim" not in DB_OVERRIDABLE and "embedding_model" not in DB_OVERRIDABLE
     store.set_config("embedding_dim", "768")

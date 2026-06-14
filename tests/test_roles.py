@@ -44,7 +44,6 @@ def test_can_read_is_rank_gte(caller, folder, expected):
 def test_can_write_requires_manual_origin_and_rank():
     assert can_write("owner", "owner", "manual") is True
     assert can_write("owner", "owner", "folder") is False  # synced = upload-locked
-    assert can_write("owner", "owner", "repo") is False
     assert can_write("user", "admin", "manual") is False   # below tier
 
 

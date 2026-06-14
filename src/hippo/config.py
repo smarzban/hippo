@@ -36,12 +36,8 @@ class Settings(BaseSettings):
     oidc_client_secret: str = ""
     public_url: str = "http://localhost:8000"  # OIDC redirect URI base
     iap_audience: str = ""  # /projects/<n>/global/backendServices/<m>
-    # --- sources / upload-to-repo (spec §1+2) ---
-    source_roots: str = ""  # colon-separated dirs /sources may register
-    github_token: str = ""
-    github_docs_repo: str = ""  # e.g. superbalist/hippo-docs
-    github_managers_repo: str = ""
-    github_branch: str = "main"
+    # --- sources ---
+    source_roots: str = ""  # colon-separated dirs a folder mount may register (allowlist)
     ui_dist: str = ""  # path to built UI (ui/dist); empty = don't serve static UI
     mcp_enabled: bool = True  # mount the /mcp MCP server
     # --- slack bot (spec: 2026-06-13-slack-integration) ---
@@ -59,14 +55,10 @@ class Settings(BaseSettings):
         return [Path(p).resolve() for p in self.source_roots.split(":") if p.strip()]
 
 
-def get_settings() -> Settings:
-    return Settings()
-
-
 # Operational keys the DB config store may override (env supplies the default).
 # Everything NOT here is ENV-ONLY and never read from the DB:
 #   - secrets/bootstrap: provider keys, oidc_client_secret, secret_key, db_path,
-#     setup_token, github_*, source_roots;
+#     setup_token, source_roots;
 #   - embedding_model / embedding_dim: these define the vector space and the
 #     chunk_vec table width, which is fixed at table creation and only changeable
 #     via `hippo reindex` (a CLI op that reads env). A DB override could not take

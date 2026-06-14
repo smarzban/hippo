@@ -504,7 +504,6 @@ def test_config_get_set_and_setup_flag(store):
     assert store.get_config("chat_model") == "openai:gpt-5.2"
     store.set_config("chat_model", "ollama:llama3")   # upsert
     assert store.get_config("chat_model") == "ollama:llama3"
-    assert store.all_config()["chat_model"] == "ollama:llama3"
     assert store.is_setup_complete() is False
     store.mark_setup_complete()
     assert store.is_setup_complete() is True
