@@ -75,7 +75,12 @@ ingest.py      Ingestor: parse->hash dedupe->chunk->enrich->embed+index (1 txn/d
 parsers.py     .md/.txt/.html/.docx -> (title, canonical markdown). SUPPORTED set is the gate.
                .docx via mammoth (docx -> HTML -> markdown, heading styles preserved).
                parse_bytes(filename, data) is the canonical bytes entry point (used by /ingest).
-storage.py     Storage(con, embedder): ALL SQL lives here. upsert/delete/get/list docs (takes folder_id, not source_id),
+storage/       Storage(con, embedder): ALL SQL lives in this package. Decomposed (LOW-01) into one mixin module per
+               persistence domain behind a thin `Storage` facade in `_facade.py` — documents.py / folders.py / users.py /
+               tokens.py / config_store.py / search.py, with shared types+helpers in _common.py and re-exports in __init__.py.
+               The facade owns the single connection + single lock; mixins call each other via MRO (e.g. delete_folder reuses
+               _delete_chunks; token mint reuses _user_id_for). Public surface unchanged: `from .storage import Storage` (+ dataclasses).
+               upsert/delete/get/list docs (takes folder_id, not source_id),
                search_hybrid (FTS5 BM25 + vec KNN merged via RRF, k=60), grep (raises ValueError on bad regex/timeout/pattern-too-long).
                backup(path) via VACUUM INTO for consistent snapshots.
                Folder CRUD: get_folder, list_folders(role), create_folder(parent_id, name, origin, location), rename_folder, move_folder (rewrites whole subtree tier), delete_folder (cascades), folder_path (slash-joined ancestor path), folder_by_location.
@@ -119,7 +124,7 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 
 - **Tests never hit the network.** Use `FakeEmbedder` + pydantic-ai `TestModel`/`FunctionModel`; agent/api/enrich
   tests set `pydantic_ai.models.ALLOW_MODEL_REQUESTS = False`. Keep it.
-- **No SQL outside storage.py** (now zero exceptions — `reindex` moved into `Storage.reindex`). The agent/API/ingest
+- **No SQL outside the `storage/` package** (now zero exceptions — `reindex` moved into `Storage.reindex`). The agent/API/ingest
   call the Storage interface — this is the Postgres exit ramp; don't erode it.
 - **One `Storage` per connection.** `Storage` serializes its shared sqlite connection with a `threading.Lock`
   (event loop + `run_in_threadpool` workers share one `con`); network embedding stays outside the lock. Two
@@ -135,7 +140,7 @@ Config via env (`HIPPO_` prefix) or `.env`: see README table. `HIPPO_EMBEDDING_M
 - **grep uses the `regex` module** with a wall-clock `timeout=` (not stdlib `re`) for ReDoS safety; `re` is still used for FTS tokenization. Pattern length is capped at 200 chars; both violations raise `ValueError`.
 - **Tool output is framed as ⟦untrusted document data⟧** — don't strip the delimiters; they are the prompt-injection boundary enforced by the system-prompt "Untrusted content" rule.
 - **Retrieval methods take `role` keyword-only with no default** — a forgotten call site must be a TypeError, never an access-control leak. Same for HubDeps.role.
-- **Role rank is defined exactly once** in `roles.py` (`ROLE_RANK = {"user":0,"admin":1,"owner":2}`). `storage.py` calls `readable_min_roles(role)` from there; `api.py` calls `can_write`/`rank` from there. Do not copy-paste rank comparisons — import from `roles.py`.
+- **Role rank is defined exactly once** in `roles.py` (`ROLE_RANK = {"user":0,"admin":1,"owner":2}`). The `storage/` package calls `readable_min_roles(role)` from there; `api.py` calls `can_write`/`rank` from there. Do not copy-paste rank comparisons — import from `roles.py`.
 - **Legacy DB is rejected loudly.** A pre-SP1 database (documents.source_id, no folders table) raises RuntimeError on `connect()`. Delete the `.db` file and re-sync — no migration path.
 - **Three root folders are seeded** by `db.py` on first open: Default (user), Private (admin), Owner (owner). They cannot be deleted or moved. Child folders inherit the parent's tier.
 
