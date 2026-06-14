@@ -12,9 +12,11 @@ import sqlite_vec
 
 from ._common import SearchHit, _role_filter, log
 
-# Grep + KNN tuning. Defined here (with the methods that read them) so tests can
-# monkeypatch `hippo.storage.search.GREP_TIMEOUT_S` etc. to exercise the bounds;
-# also re-exported from the package __init__ for backward-compatible reads.
+# Grep + KNN tuning. Defined here (with the methods that read them) so this module
+# is their single source of truth: tests monkeypatch `hippo.storage.search.
+# GREP_TIMEOUT_S` etc. to exercise the bounds. They are deliberately NOT re-exported
+# from the package __init__ — a package-level copy would be a stale binding that
+# grep() doesn't read (so patching it would be silently inert).
 GREP_MAX_PATTERN = 200      # reject absurdly long patterns
 GREP_TIMEOUT_S = 2.0        # wall-clock cap per chunk scan (regex module)
 GREP_MAX_CHUNKS = 5000      # cap chunks materialized+scanned per grep (memory + lock bound)
