@@ -96,7 +96,7 @@ When Hippo starts with an empty database it enters **setup mode**. Open the brow
 - **Setup token** — enter the setup token. Set `HIPPO_SETUP_TOKEN` in the environment before starting; if unset, a one-time random token is printed to the startup logs (grep for `first-run setup token is:`). The server validates the token first, so a wrong token is rejected immediately (403) rather than at the end.
 - **Auth mode** — choose `password`, `oidc`, or `iap` (`none` stays a dev-only env setting, not offered in the wizard).
 - **Owner account** — enter the owner email. For `password` mode, also set the initial password (8 characters minimum, validated inline). For `oidc`/`iap`, provide the email that will be the owner on first sign-in.
-- **Models** (optional) — override `chat_model`, `embedding_model`, and `embedding_dim`. Leave blank to use the env/`.env` defaults.
+- **Models** (optional) — override `chat_model` (and `enrich_model`). Leave blank to use the env/`.env` defaults. (`embedding_model`/`embedding_dim` are env-only — set them with `HIPPO_EMBEDDING_*` before first ingest; the wizard does not change them.)
 
 Submitting posts to `POST /setup`, which creates the owner, persists the chosen operational config, marks setup complete, and reloads the app into the normal chat view. The single-page form does not send folder names, so the three default root folders keep their seeded names (`Default`/`Private`/`Owner`) — rename them later in **Settings → Folders**. (The `POST /setup` endpoint itself still accepts an optional `roots` rename for API callers; the wizard simply no longer uses it.)
 
@@ -111,11 +111,12 @@ Hippo keeps a `config` table in the database for operational, **non-secret** set
 | `auth_mode` | takes effect on next `hippo serve` restart |
 | `chat_model` | live per-request — no restart needed |
 | `enrich_model` | takes effect on next restart |
-| `embedding_model` / `embedding_dim` | takes effect on next restart; **locked once documents exist** (run `hippo reindex` first) |
 | `allowed_domain` | takes effect on next restart |
 | `oidc_client_id` / `public_url` / `iap_audience` | takes effect on next restart |
 
 **Secrets are always env-only.** `OPENAI_API_KEY`, `HIPPO_OIDC_CLIENT_SECRET`, `HIPPO_SECRET_KEY`, `HIPPO_SETUP_TOKEN`, GitHub tokens, and all other credentials are never stored in the database and never returned by any API endpoint.
+
+**`embedding_model` / `embedding_dim` are env-only**, not DB-overridable. The vector space and the `chunk_vec` table width are fixed when the index is created and only change via `hippo reindex` (a CLI op that reads the environment). A DB override could neither take effect nor stay accurate after a reindex, so the env-built embedder is the single source of truth — set them with `HIPPO_EMBEDDING_MODEL` / `HIPPO_EMBEDDING_DIM` and run `hippo reindex` to change them.
 
 ## Settings UI
 

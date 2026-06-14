@@ -61,6 +61,27 @@ def test_embedding_dim_mismatch_on_reopen_raises_clear_error(tmp_path):
         _add(store2, "b.md", chash="h2")
 
 
+def test_legacy_db_without_dim_stamp_is_not_blindly_backfilled(tmp_path):
+    """Codex review (PR-3): a legacy DB (model stamped, no dim row) must NOT have its
+    dim blindly backfilled from the current embedder — a blind stamp could record a
+    value that disagrees with the real chunk_vec width, masking a true mismatch the
+    next time around. The legacy path skips stamping; the next reindex sets it right."""
+    import sqlite3
+    db = tmp_path / "t.db"
+    store = Storage(connect(db, embedding_dim=32), FakeEmbedder(dim=32))
+    _add(store, "a.md")                                  # stamps model=fake, dim=32
+    with store.con:                                      # simulate a pre-dim-tracking DB
+        store.con.execute("DELETE FROM meta WHERE key='embedding_dim'")
+
+    # reopen with a different-dim embedder (same model name); chunk_vec stays float[32]
+    store2 = Storage(connect(db, embedding_dim=64), FakeEmbedder(dim=64))
+    with pytest.raises((sqlite3.OperationalError, ValueError)):
+        _add(store2, "b.md", chash="h2")                 # real mismatch surfaces at the insert
+    # crucially, no WRONG dim stamp was committed by the skipped backfill
+    assert store2.con.execute(
+        "SELECT value FROM meta WHERE key='embedding_dim'").fetchone() is None
+
+
 def test_reindex_restamps_dim(tmp_path):
     """MED-08: reindex to a new dim re-stamps embedding_dim so later writes validate
     against the NEW dim, not the old one."""

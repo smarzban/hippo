@@ -425,26 +425,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         # mode that would be unusable / brick on the next restart.
         _require_mode_prereqs(mode, oidc_client_id=oidc.get("client_id"),
                               iap_audience=body.get("iap_audience"))
-        # reject a non-int-coercible embedding_dim before any side effects
-        if "embedding_dim" in models and models["embedding_dim"] not in (None, ""):
-            try:
-                int(models["embedding_dim"])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400,
-                    detail="embedding_dim must be an integer")
-        # embedding_model/dim are determined by the running embedder (env), not the
-        # wizard — refuse a value that disagrees, so the persisted config can't claim a
-        # model/dim the index won't actually use (MED-07). Set them via HIPPO_EMBEDDING_*.
-        if models.get("embedding_model") not in (None, "") \
-                and str(models["embedding_model"]) != store.embedder.model:
-            raise HTTPException(status_code=400,
-                detail=f"embedding_model is fixed by the running embedder ({store.embedder.model!r}); "
-                       "set HIPPO_EMBEDDING_MODEL in the environment instead")
-        if models.get("embedding_dim") not in (None, "") \
-                and int(models["embedding_dim"]) != store.embedder.dim:
-            raise HTTPException(status_code=400,
-                detail=f"embedding_dim is fixed by the running embedder ({store.embedder.dim}); "
-                       "set HIPPO_EMBEDDING_DIM in the environment instead")
+        # embedding_model/dim are env-only (the vector space + chunk_vec width are
+        # fixed at table creation; changing them needs `hippo reindex`). The wizard
+        # may still send them, but we never persist them to the overlay — the env-built
+        # embedder is the single source of truth, so the config can never go stale (MED-07).
         # atomic claim: only the first concurrent request proceeds; a racing second
         # valid request loses here and gets a 409 (no double-owner creation).
         if not store.claim_setup():
@@ -466,12 +450,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         # persist operational config (DB-overridable keys only). The setup_complete
         # flag was already set atomically by claim_setup() above.
         store.set_config("auth_mode", mode)
-        # embedding_model/dim only persisted on a fresh index (parity with PUT /config:
-        # chunk_vec dim is fixed once documents exist). Normally moot — setup runs fresh.
-        persist_embed = store.document_count() == 0
-        for k in ("chat_model", "enrich_model", "embedding_model", "embedding_dim"):
-            if k in ("embedding_model", "embedding_dim") and not persist_embed:
-                continue
+        # Only DB-overridable model keys are persisted. embedding_model/dim are
+        # env-only (see MED-07) and deliberately NOT written, even if the wizard sent them.
+        for k in ("chat_model", "enrich_model"):
             if k in models and models[k] not in (None, ""):
                 store.set_config(k, str(models[k]))
         for k_body, k_cfg in (("client_id", "oidc_client_id"), ("public_url", "public_url")):
@@ -852,28 +833,10 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         body = await request.json()
         for key in body:
             if key not in DB_OVERRIDABLE:
+                # embedding_model/dim land here too: they are env-only (MED-07), so a
+                # PUT that tries to set them is rejected as non-overridable.
                 raise HTTPException(status_code=400,
                     detail=f"{key!r} is not a settable operational key (secrets/env-only keys are rejected)")
-        # reject a non-int-coercible embedding_dim now (else it surfaces as a 500
-        # later inside Config._coerce when the overlay is read)
-        if "embedding_dim" in body:
-            try:
-                int(body["embedding_dim"])
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400,
-                    detail="embedding_dim must be an integer")
-        # embedding_model/dim describe the RUNNING embedder + chunk_vec, built from env
-        # and unchangeable at runtime (changing them needs a CLI `hippo reindex`). Refuse
-        # to persist a value that disagrees with the live embedder, so GET /config and
-        # /settings/status can never report a model/dim the index doesn't actually use (MED-07).
-        if "embedding_model" in body and str(body["embedding_model"]) != store.embedder.model:
-            raise HTTPException(status_code=409,
-                detail=f"embedding_model is fixed by the running embedder ({store.embedder.model!r}); "
-                       "change HIPPO_EMBEDDING_MODEL in the environment and run `hippo reindex`")
-        if "embedding_dim" in body and int(body["embedding_dim"]) != store.embedder.dim:
-            raise HTTPException(status_code=409,
-                detail=f"embedding_dim is fixed by the running embedder ({store.embedder.dim}); "
-                       "change HIPPO_EMBEDDING_DIM in the environment and run `hippo reindex`")
         if "auth_mode" in body:
             # consider oidc_client_id/iap_audience set in this SAME request when
             # validating prereqs for the target mode.

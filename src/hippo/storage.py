@@ -111,11 +111,12 @@ class Storage:
                     f"to re-embed, or set HIPPO_EMBEDDING_MODEL={model_row}"
                 )
             if dim_row is None:
-                # legacy DB stamped before dim tracking — backfill from the current
-                # embedder (it matches the live chunk_vec, or the next insert fails loudly).
-                self.con.execute(
-                    "INSERT INTO meta(key, value) VALUES ('embedding_dim', ?)",
-                    (str(self.embedder.dim),))
+                # Legacy DB stamped before dim tracking: do NOT backfill from the
+                # current embedder — the live chunk_vec width is unknown here, so a
+                # blind stamp could record a dim that disagrees with the table (then
+                # the insert fails raw AND the meta is wrong, masking it next time).
+                # Leave it unstamped; the next `hippo reindex` stamps the true dim.
+                pass
             elif int(dim_row) != self.embedder.dim:
                 raise ValueError(
                     f"database was indexed at embedding dimension {dim_row} but the "

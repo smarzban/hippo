@@ -101,21 +101,22 @@ def test_config_get_put_owner_only_and_secrets_protected(tmp_path):
     assert c.put("/config", json={"nonsense": "x"}).status_code == 400
 
 
-def test_embedding_config_must_match_running_embedder(tmp_path):
-    """MED-07: embedding_model/dim are fixed by the env-built embedder + chunk_vec,
-    so PUT /config refuses a value that DISAGREES (config can never silently claim a
-    model/dim the index doesn't use); a value matching the running embedder is a
-    harmless no-op. Holds regardless of whether documents exist."""
+def test_embedding_keys_are_env_only_not_db_overridable(tmp_path):
+    """MED-07: embedding_model/dim are env-only — the env-built embedder is the single
+    source of truth, so a DB overlay could neither take effect (chunk_vec dim is fixed)
+    nor stay accurate after a reindex. PUT /config rejects them as non-overridable, and
+    they never appear in GET /config; /settings/status reports the env value."""
     app = build_app(_settings(tmp_path))   # fake embedder, dim=32
     c = TestClient(app)
-    # a value matching the running embedder is accepted (overlay == reality)
-    assert c.put("/config", json={"embedding_dim": 32}).status_code == 200
-    assert c.put("/config", json={"embedding_model": "fake"}).status_code == 200
-    # a mismatching value is refused with a reindex/env pointer
-    r = c.put("/config", json={"embedding_dim": 128})
-    assert r.status_code == 409 and "reindex" in r.json()["detail"].lower()
-    r2 = c.put("/config", json={"embedding_model": "other"})
-    assert r2.status_code == 409 and "reindex" in r2.json()["detail"].lower()
+    for key, val in (("embedding_dim", 128), ("embedding_model", "other")):
+        r = c.put("/config", json={key: val})
+        assert r.status_code == 400 and "not a settable operational key" in r.json()["detail"]
+    # GET /config exposes only the DB-overridable keys (no embedding_*)
+    got = c.get("/config").json()
+    assert "embedding_model" not in got and "embedding_dim" not in got
+    assert "chat_model" in got
+    # status still reports the true (env) embedding model
+    assert c.get("/settings/status").json()["embedding_model"] == "fake"
 
 
 def test_auth_switch_blocked_when_owner_lacks_target_credential(tmp_path):
@@ -199,17 +200,26 @@ def test_setup_iap_requires_audience_in_body(tmp_path):
                                    "iap_audience": "aud", "models": {}}).status_code == 200
 
 
-def test_put_config_embedding_dim_non_int_rejected(tmp_path):
+def test_put_config_embedding_dim_rejected_as_non_overridable(tmp_path):
+    """embedding_dim is env-only (MED-07): PUT /config rejects it as non-overridable."""
     app = build_app(_settings(tmp_path))
     c = TestClient(app)
     r = c.put("/config", json={"embedding_dim": "abc"})
-    assert r.status_code == 400 and "embedding_dim" in r.json()["detail"].lower()
+    assert r.status_code == 400 and "not a settable operational key" in r.json()["detail"]
 
 
-def test_setup_embedding_dim_non_int_rejected(tmp_path):
+def test_setup_ignores_embedding_keys(tmp_path):
+    """MED-07: the wizard may still send embedding_model/dim, but POST /setup never
+    persists them to the overlay (env is authoritative) — so setup succeeds and no
+    embedding config row is written, even for a junk value."""
     s = _settings(tmp_path, setup_token="t", secret_key="k")
-    c = TestClient(build_app(s))
+    app = build_app(s)
+    c = TestClient(app)
     r = c.post("/setup", json={"token": "t", "auth_mode": "password", "owner_email": "o@x.com",
                                "owner_password": "ownerpass1",
-                               "models": {"embedding_dim": "abc"}})
-    assert r.status_code == 400 and "embedding_dim" in r.json()["detail"].lower()
+                               "models": {"chat_model": "m", "embedding_dim": "abc",
+                                          "embedding_model": "other"}})
+    assert r.status_code == 200
+    assert app.state.store.get_config("embedding_model") is None
+    assert app.state.store.get_config("embedding_dim") is None
+    assert app.state.store.get_config("chat_model") == "m"   # DB-overridable key still persists
