@@ -36,3 +36,15 @@ def test_enricher_feeds_embedding_inputs(tmp_path):
 def test_enricher_constructs_without_api_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     Enricher("openai:gpt-5-mini")  # must not raise at construction
+
+
+def test_enricher_handles_empty_model_output():
+    """LOW-43: some models (a documented gpt-oss:20b quirk) return empty/blank content.
+    summarize()/contextualize() must not crash on that — they return a clean empty
+    string (.strip()), which the ingest path stores as an empty summary rather than
+    erroring. Pin that contract so a regression in empty-output handling is caught."""
+    e = Enricher(model=TestModel(custom_output_text=""))
+    assert e.summarize("Title", "body") == ""
+    assert e.contextualize("Title", "Section", "chunk") == ""
+    e2 = Enricher(model=TestModel(custom_output_text="   \n  "))
+    assert e2.summarize("Title", "body") == ""   # whitespace-only also normalizes to empty

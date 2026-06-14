@@ -3,11 +3,15 @@ import hashlib
 import logging
 import re
 import secrets
+import sys
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlencode
 
 log = logging.getLogger("hippo.auth")
+# Dedicated audit logger for privileged state changes (role/user/password/config/
+# folder mutations). Separate name so an operator can route/retain it independently.
+audit = logging.getLogger("hippo.audit")
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -150,6 +154,16 @@ def build_app(settings: Settings | None = None, model_override=None, *,
               iap_verifier=None, code_exchanger=None, google_key_fetcher=None,
               github_factory=None) -> FastAPI:
     settings = settings or Settings()
+    # Ensure hippo's logs survive a direct ASGI launch (uvicorn 'hippo.api:build_app'
+    # --factory, gunicorn, etc.), not only `hippo serve` (LOW-21). Idempotent: add a
+    # handler only if neither the 'hippo' logger nor the root has one — so running via
+    # `hippo serve` (which calls logging.basicConfig on root) doesn't double-log.
+    _hippo_log = logging.getLogger("hippo")
+    if not _hippo_log.handlers and not logging.getLogger().handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+        _hippo_log.addHandler(_h)
+        _hippo_log.setLevel(logging.INFO)
     con = connect(settings.db_path, embedding_dim=settings.embedding_dim)
     embedder = build_embedder(settings)
     store = Storage(con, embedder)
@@ -175,8 +189,14 @@ def build_app(settings: Settings | None = None, model_override=None, *,
     effective_setup_token = settings.setup_token
     if not effective_setup_token and not store.is_setup_complete():
         effective_setup_token = secrets.token_urlsafe(24)
-        log.warning("HIPPO_SETUP_TOKEN not set — first-run setup token is: %s",
-                    effective_setup_token)
+        # The token is a live credential that authorizes POST /setup. Emit it ONLY to
+        # the local console (stderr), not the application logger that may ship to a
+        # centralized aggregator where the secret would persist (LOW-22). The logger
+        # gets a value-free notice so operators know where to look.
+        print(f"\nHIPPO_SETUP_TOKEN not set — first-run setup token: {effective_setup_token}\n",
+              file=sys.stderr, flush=True)
+        log.warning("HIPPO_SETUP_TOKEN not set — a one-time first-run setup token was "
+                    "printed to stderr (the console), not to this log.")
 
     enricher = Enricher(settings.enrich_model) if settings.enrich_enabled else None
     ingestor = Ingestor(
@@ -363,6 +383,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             body = await request.json()
             email = (body.get("email") or "").strip().lower()
             password = body.get("password") or ""
+            # Decay an elapsed lockout so the counter restarts (LOW-15): otherwise a
+            # once-locked account re-locks on its very first post-expiry attempt.
+            store.clear_lock_if_expired(email)
             creds = store.get_credentials(email)
             # Generic failure for missing user / no local password / bad password.
             generic = HTTPException(status_code=401, detail="invalid email or password")
@@ -465,6 +488,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         # for password mode, log the owner in immediately
         if mode == "password":
             request.session["user_id"] = store.get_credentials(owner_email)["user_id"]
+        audit.info("setup completed: owner=%s auth_mode=%s", safe_log(owner_email), mode)
         return {"ok": True, "auth_mode": mode}
 
     @app.get("/health")
@@ -605,6 +629,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         f = store.get_folder(fid)
+        audit.info("folder created: %s created %r (id=%s, origin=%s, tier=%s)",
+                   safe_log(user.email), f.name, f.id, f.origin, f.min_role)
         return {"id": f.id, "name": f.name, "tier": f.min_role, "origin": f.origin}
 
     @app.patch("/folders/{folder_id}")
@@ -626,6 +652,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 store.move_folder(folder_id, body.parent_id)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        audit.info("folder updated: %s patched folder %s (name=%r, parent_id=%s)",
+                   safe_log(user.email), folder_id, body.name, body.parent_id)
         return {"id": folder_id}
 
     @app.delete("/folders/{folder_id}")
@@ -640,6 +668,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=400, detail=str(e))
         if not ok:
             raise HTTPException(status_code=404, detail="folder not found")
+        audit.info("folder deleted: %s deleted folder %s", safe_log(user.email), folder_id)
         return {"deleted": folder_id}
 
     @app.post("/folders/{folder_id}/resync")
@@ -662,6 +691,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             max_chars=settings.chunk_max_chars,
             overlap_chars=settings.chunk_overlap_chars, enricher=enricher,
             max_doc_chars=settings.max_doc_chars)
+        audit.info("folder resynced: %s resynced folder %s (added=%s updated=%s removed=%s)",
+                   safe_log(user.email), folder_id, report.added, report.updated, report.removed)
         return {"report": {"added": report.added, "updated": report.updated,
                            "skipped": report.skipped, "removed": report.removed,
                            "failed": report.failed}}
@@ -717,6 +748,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=409, detail="a user with that email already exists")
         if body.name.strip():
             store.set_name(target, body.name.strip())
+        audit.info("user created: %s created %s (role=%s)",
+                   safe_log(user.email), safe_log(target), effective_role)
         return resp
 
     @app.put("/users/{email}/role")
@@ -739,6 +772,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 detail="this user is a bootstrap admin (HIPPO_ADMIN_EMAILS); "
                        "remove them from that env var to change their role")
         store.set_role(target, body.role)
+        audit.info("role change: %s set %s -> %s",
+                   safe_log(user.email), safe_log(target), body.role)
         return {"email": target, "role": body.role}
 
     @app.post("/me/password")
@@ -755,6 +790,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=400,
                 detail=f"new password must be at least {MIN_PASSWORD_LEN} characters")
         store.set_password(user.email, hash_password(new))
+        audit.info("password changed (self): %s", safe_log(user.email))
         return {"ok": True}
 
     @app.post("/users/{email}/password")
@@ -773,6 +809,7 @@ def build_app(settings: Settings | None = None, model_override=None, *,
             raise HTTPException(status_code=403, detail="cannot reset a user above your tier")
         new_pw = secrets.token_urlsafe(12)   # >= MIN_PASSWORD_LEN; shown once
         store.set_password(target, hash_password(new_pw))
+        audit.info("password reset: %s reset %s", safe_log(user.email), safe_log(target))
         return {"email": target, "password": new_pw}
 
     def _require_mode_prereqs(target: str, *, oidc_client_id: str | None = None,
@@ -845,6 +882,9 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 iap_audience=body.get("iap_audience"))
         for key, value in body.items():
             store.set_config(key, str(value))
+        # Log which keys changed (not values — auth_mode/model names are operational,
+        # but keep the audit line uniformly value-free as the rule for this logger).
+        audit.info("config change: %s set %s", safe_log(user.email), sorted(body))
         return {"ok": True}
 
     @app.get("/tokens")
@@ -886,6 +926,8 @@ def build_app(settings: Settings | None = None, model_override=None, *,
                 detail="cannot revoke a token owned by a user above your tier")
         if not store.revoke_token_any(token_id):
             raise HTTPException(status_code=404, detail="token not found")
+        audit.info("token revoked: %s revoked token %s owned by %s",
+                   safe_log(user.email), token_id, safe_log(owner_email))
         return {"revoked": token_id}
 
     @app.get("/settings/status")

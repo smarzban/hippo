@@ -86,6 +86,40 @@ def test_lockout_blocks_even_correct_password(tmp_path):
     assert r.status_code == 401 and "locked" in r.json()["detail"].lower()
 
 
+def test_correct_password_works_after_lockout_window_expires(tmp_path):
+    """MED-20 (integration) + LOW-15: once the lockout window elapses, the account
+    unlocks and a correct password logs in again (the counter is decayed first, so it
+    isn't instantly re-locked)."""
+    app = _app_with_owner(tmp_path)
+    c = TestClient(app)
+    for _ in range(5):
+        c.post("/auth/login", json={"email": "owner@x.com", "password": "wrong"})
+    assert c.post("/auth/login",
+                  json={"email": "owner@x.com", "password": "s3cret-pass"}).status_code == 401
+    # force the window into the past (simulate the 15 minutes elapsing)
+    with app.state.store.con:
+        app.state.store.con.execute(
+            "UPDATE users SET locked_until=datetime('now','-1 minute') WHERE email=?",
+            ("owner@x.com",))
+    r = c.post("/auth/login", json={"email": "owner@x.com", "password": "s3cret-pass"})
+    assert r.status_code == 200 and r.json()["role"] == "owner"
+
+
+def test_privileged_mutation_emits_audit_log(tmp_path, caplog):
+    """MED-13: a privileged mutation (admin password reset) emits a hippo.audit line
+    naming the actor and target, so post-incident 'who did what' is answerable."""
+    import logging
+    app = _app_with_owner(tmp_path)
+    store = app.state.store
+    store.set_password("dev@x.com", hash_password("devpass12"), role="user")
+    c = TestClient(app)
+    c.post("/auth/login", json={"email": "owner@x.com", "password": "s3cret-pass"})
+    with caplog.at_level(logging.INFO, logger="hippo.audit"):
+        assert c.post("/users/dev@x.com/password").status_code == 200
+    msgs = [r.getMessage() for r in caplog.records if r.name == "hippo.audit"]
+    assert any("password reset" in m and "owner@x.com" in m and "dev@x.com" in m for m in msgs)
+
+
 def test_bearer_token_still_works_in_password_mode(tmp_path):
     app = _app_with_owner(tmp_path)
     tok = app.state.store.create_token("owner@x.com")

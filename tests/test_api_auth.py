@@ -299,8 +299,18 @@ def test_resync_missing_folder_does_not_wipe(tmp_path):
     missing = str(tmp_path / "gone")
     fid = store.create_folder(parent_id=default_id, name="Gone",
                               origin="folder", location=missing)
-    # path isn't a directory -> 400
+    # seed a document INTO that folder so we can prove the no-wipe property (LOW-40)
+    from hippo.chunking import Chunk
+    store.upsert_document(source_type="folder", path="gone/doc.md", title="Doc",
+        content="kept", content_hash="kh",
+        chunks=[Chunk(position=0, heading_path="Doc", text="kept")],
+        embed_inputs=["kept"], folder_id=fid)
+    before = store.document_count()
+    assert before >= 1
+    # path isn't a directory -> 400, and crucially the already-indexed doc is NOT wiped
     assert c.post(f"/folders/{fid}/resync", headers=admin).status_code == 400
+    assert store.document_count() == before
+    assert any(d.path == "gone/doc.md" for d in store.list_documents(role="owner"))
 
 
 def test_resync_known_and_unknown(tmp_path):
