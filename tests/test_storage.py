@@ -347,10 +347,10 @@ def test_fts_candidates_are_role_filtered(store):
 
 def test_grep_rejects_overlong_pattern(store):
     import pytest
-    from hippo import storage
+    from hippo.storage import search  # grep tuning constants live with grep (LOW-01 split)
     _add_doc(store, "a.md", "hello world")
     with pytest.raises(ValueError, match="too long"):
-        store.grep("x" * (storage.GREP_MAX_PATTERN + 1), role="owner")
+        store.grep("x" * (search.GREP_MAX_PATTERN + 1), role="owner")
 
 
 def test_grep_times_out_on_catastrophic_pattern(store, monkeypatch):

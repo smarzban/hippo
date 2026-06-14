@@ -16,12 +16,14 @@ from ._common import (
     _role_filter,
 )
 from ._facade import Storage
-from .search import (
-    GREP_MAX_CHUNKS,
-    GREP_MAX_PATTERN,
-    GREP_TIMEOUT_S,
-    VEC_OVERFETCH,
-)
+
+# NB: the grep/KNN tuning constants (GREP_MAX_PATTERN/GREP_TIMEOUT_S/GREP_MAX_CHUNKS/
+# VEC_OVERFETCH) are intentionally NOT re-exported here. They live in `.search`
+# alongside the methods that read them, so `search.py` is their single source of
+# truth. Re-exporting them at the package level would create a stale COPY: `grep()`
+# reads the `search` binding, so patching a package-level copy would be silently
+# inert (and `from .search import NAME` doesn't alias — it binds a separate name).
+# Import from `hippo.storage.search` to read or monkeypatch them.
 
 __all__ = [
     "Storage",
@@ -29,10 +31,6 @@ __all__ = [
     "DocumentMeta",
     "Folder",
     "SearchHit",
-    "GREP_MAX_PATTERN",
-    "GREP_TIMEOUT_S",
-    "GREP_MAX_CHUNKS",
-    "VEC_OVERFETCH",
     "_role_filter",
     "_norm_email",
 ]
