@@ -59,9 +59,8 @@ the wizard/`PUT /config` gates live.
   return the same generic 401. Failed attempts are logged (`hippo.auth`, email
   sanitized) for alerting.
 - **Sessions:** signed cookies via `SessionMiddleware` (requires
-  `HIPPO_SECRET_KEY`). The code doesn't set `max_age` explicitly, so Starlette's
-  default lifetime (~14 days) applies; the cookie's `Secure` flag follows
-  `HIPPO_PUBLIC_URL`'s scheme.
+  `HIPPO_SECRET_KEY`). `max_age` is set to a 7-day session lifetime; the
+  cookie's `Secure` flag follows `HIPPO_PUBLIC_URL`'s scheme.
 
 ## Authorization: folder tiers
 

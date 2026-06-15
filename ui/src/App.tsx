@@ -10,14 +10,21 @@ import SetupWizard from "./SetupWizard";
 import LoginScreen from "./LoginScreen";
 import UploadModal from "./UploadModal";
 import ChatView from "./ChatView";
+import { chatHistoryKey, clearMessages, loadMessages, saveMessages } from "./chatHistory";
 
 type OpenDoc = { id: number; section: string };
 
 type Me = { email: string; role: string; auth_mode: string; name: string };
 
 export default function App() {
-  const { messages, sendMessage, status, error } = useChat({
+  // Seed the transcript from device-local storage so a refresh keeps the
+  // current conversation. The signed-in user isn't known at first render, so
+  // we seed from the default key here and re-key to the user's history once
+  // /me resolves (see the effect below). Persistence logic lives in
+  // chatHistory.ts; App just calls it.
+  const { messages, sendMessage, status, error, setMessages } = useChat({
     transport: new DefaultChatTransport({ api: "/chat" }),
+    messages: loadMessages(localStorage, chatHistoryKey(null)),
   });
   const [input, setInput] = useState("");
   const [docIndex, setDocIndex] = useState<DocIndex>(new Map());
@@ -68,6 +75,26 @@ export default function App() {
       else if (r.ok) r.json().then(setMe);
     }).catch(() => {});
   }, []);
+
+  // Once we know who's signed in, swap the seeded "default" transcript for that
+  // user's own history (avoids one user's chat bleeding into another's on a
+  // shared browser). Only restores if the user-specific key holds something.
+  const meEmail = me?.email ?? null;
+  useEffect(() => {
+    if (!meEmail) return;
+    const restored = loadMessages(localStorage, chatHistoryKey(meEmail));
+    if (restored.length > 0) setMessages(restored);
+  }, [meEmail, setMessages]);
+
+  // Persist the transcript on every change, namespaced by the signed-in user.
+  useEffect(() => {
+    saveMessages(localStorage, chatHistoryKey(meEmail), messages);
+  }, [messages, meEmail]);
+
+  const newChat = useCallback(() => {
+    clearMessages(localStorage, chatHistoryKey(meEmail));
+    setMessages([]);
+  }, [meEmail, setMessages]);
 
   useEffect(() => {
     fetch("/auth/config").then((r) => r.json()).then((c) => setAuthMode(c.auth_mode)).catch(() => {});
@@ -147,6 +174,11 @@ export default function App() {
           )}
           {me && (
             <button className="gear" title="Settings" onClick={() => setView("settings")}>⚙</button>
+          )}
+          {messages.length > 0 && (
+            <button className="upload-btn" title="Start a fresh conversation" onClick={newChat}>
+              New chat
+            </button>
           )}
           <button className="upload-btn" onClick={() => { setShowUpload(true); dispatchUp({ type: "reset" }); }}>
             Add doc

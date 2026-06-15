@@ -32,7 +32,8 @@ HIPPO_SECRET_KEY=<a long random string>   # e.g. `openssl rand -hex 32`
 
 - Email + password; the hash is argon2id; **no default credentials exist**.
 - An account locks for **15 minutes after 5 consecutive failures**.
-- Sign-in sets a signed session cookie (Starlette's default lifetime, ~14 days).
+- Sign-in sets a signed session cookie with a 7-day lifetime (its `Secure` flag
+  follows `HIPPO_PUBLIC_URL`'s scheme).
 - The first owner is created by the [first-run wizard](#first-run-wizard) or the
   break-glass CLI:
 
