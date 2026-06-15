@@ -1,0 +1,16 @@
+# Hippo
+
+> Self-hosted, agentic retrieval-augmented generation (RAG) knowledge base: ask your team's docs in chat and get answers cited only from them — role-governed, via a web UI, an MCP server, and Slack.
+
+Hippo indexes Markdown / text / HTML / `.docx`, stores everything in one SQLite file (`sqlite-vec` + FTS5 hybrid search), and works with OpenAI or local Ollama. Three-tier RBAC (`user`/`admin`/`owner`) plus per-folder tiers are enforced in the data layer, so every surface returns only what the caller may read. (Repo-relative links below become URLs once the docs are published.)
+
+## Docs
+- [Quick start](docs/guide/quickstart.md): the fastest path to a running instance.
+- [Install guide](docs/guide/install/README.md): Docker, local, the full configuration reference, the four auth modes, and production hardening.
+- [User guide](docs/guide/users/README.md): asking questions + reading citations, adding documents, folders & access, profile/tokens, admin & owner tasks, MCP, Slack, troubleshooting.
+- [Technical docs](docs/guide/technical/README.md): architecture, the RAG pipeline, retrieval, the storage layer, the API, auth & RBAC, the agent, integrations, the security model.
+- [Documentation index](docs/guide/README.md): the full map of the guide.
+
+## Optional
+- [Configuration reference](docs/guide/install/configuration.md): every `HIPPO_` environment variable and the env-vs-DB-overlay rules.
+- [CLI reference](docs/guide/technical/cli.md): every `hippo` command.

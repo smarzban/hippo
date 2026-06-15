@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/smarzban/hippo/actions/workflows/ci.yml/badge.svg)](https://github.com/smarzban/hippo/actions/workflows/ci.yml)
 
-Hippo indexes your Markdown / text / HTML / `.docx` (incl. Google-Docs exports) and answers questions about them in plain language — citing the exact `[path > section]` each claim comes from, and refusing to answer from anything it wasn't given. It's role-governed and self-hosted, scaling from one person to a whole org, and reachable from a web chat UI, an MCP server, and Slack.
+Hippo is a **self-hosted, agentic retrieval-augmented generation (RAG) knowledge base**. It indexes your Markdown / text / HTML / `.docx` (incl. Google-Docs exports) and answers questions about them in plain language — citing the exact `[path > section]` each claim comes from, and refusing to answer from anything it wasn't given. It's role-governed, scales from one person to a whole org, and is reachable from a web chat UI, an MCP server, and Slack.
 
 ## Why Hippo
 
@@ -12,7 +12,7 @@ Hippo indexes your Markdown / text / HTML / `.docx` (incl. Google-Docs exports) 
 - **Access control that holds.** Three-tier RBAC (`user` / `admin` / `owner`) plus per-folder tiers, enforced in the data layer — so chat, MCP, and Slack all return only what you're allowed to see.
 - **Hybrid retrieval.** Keyword (FTS5 BM25) + semantic (vector KNN) search, fused — good at both exact identifiers and paraphrase.
 - **Many front doors.** A React chat UI, an MCP server for Claude Code / Desktop, and a Slack bot — all over the same grounded, role-filtered engine.
-- **Self-hosted & simple.** The whole knowledge base is one SQLite file (`sqlite-vec` + FTS5). No external vector DB. Runs fully offline with fake embeddings.
+- **Self-hosted & simple.** A self-hosted alternative to hosted "chat-with-your-docs" / RAG services — your data stays in one SQLite file (`sqlite-vec` + FTS5) you control. No external vector DB. Runs fully offline with fake embeddings.
 - **Team-ready.** Four auth modes (`none` / `oidc` / `iap` / `password`), a browser first-run setup wizard, and folder-scoped uploads.
 
 ## Quick start
