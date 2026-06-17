@@ -94,9 +94,11 @@ def build_app(settings: Settings | None = None, model_override=None, *,
         # TLS-terminating proxy that forwards plain HTTP, set HIPPO_PUBLIC_URL to the
         # external https:// base (also required for oidc) so the cookie is Secure and
         # can't leak over the internal hop (LOW-37); the http default is dev-only.
+        # max_age sets the documented 7-day session lifetime explicitly (without it
+        # Starlette defaults to ~14 days).
         app.add_middleware(SessionMiddleware, secret_key=settings.secret_key,
                            https_only=ctx.public_url.startswith("https"),
-                           same_site="lax")
+                           same_site="lax", max_age=7 * 24 * 60 * 60)
 
     auth = make_auth_deps(ctx)
     routes_session.register(app, ctx, auth)

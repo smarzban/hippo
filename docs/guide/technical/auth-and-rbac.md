@@ -59,9 +59,46 @@ the wizard/`PUT /config` gates live.
   return the same generic 401. Failed attempts are logged (`hippo.auth`, email
   sanitized) for alerting.
 - **Sessions:** signed cookies via `SessionMiddleware` (requires
-  `HIPPO_SECRET_KEY`). The code doesn't set `max_age` explicitly, so Starlette's
-  default lifetime (~14 days) applies; the cookie's `Secure` flag follows
-  `HIPPO_PUBLIC_URL`'s scheme.
+  `HIPPO_SECRET_KEY`). `max_age` is set to a 7-day session lifetime; the
+  cookie's `Secure` flag follows `HIPPO_PUBLIC_URL`'s scheme.
+
+## Client-side chat history (`ui/src/chatHistory.ts`)
+
+The chat transcript is persisted **in the browser's `localStorage`** so a refresh
+keeps the current conversation. Because an answer can quote access-controlled
+documents, the persistence is shaped to limit exposure:
+
+- **Per-user keys + purge on sign-in.** The store is namespaced by the signed-in
+  email (`hippo:chat:v1:<email>`, lower-cased), so one user's transcript is never
+  restored for another. The transcript is restored from the user's own key only
+  once `/me` resolves — including the empty case — never from a shared key. On
+  first sight of a signed-in user we **purge every other user's chat key** from
+  the device, so a prior user's transcript (and the enumeration of their email
+  via the key) doesn't linger on a shared/kiosk browser.
+- **Cleared on sign-out.** Both sign-out paths wipe the current user's key before
+  ending the session, so the transcript doesn't outlive the session on a
+  shared/kiosk machine. "New chat" clears it too.
+- **Role-bound.** The envelope records the role that produced it; a transcript is
+  dropped on load if the caller's role no longer matches (e.g. an admin
+  downgraded to user), so higher-tier answers aren't replayed after a downgrade.
+- **7-day TTL.** A stored transcript carries a timestamp and is dropped on load
+  once older than 7 days, so a device-local copy never outlives the session
+  lifetime that produced it.
+- **Bounded + defensive.** Capped to the last 200 messages (so it can't grow into
+  the ~5 MB quota and silently stop persisting / serve a stale blob); a failed
+  write removes the key (degrades to no-history, never stale); every load is
+  validated element-by-element (a malformed blob degrades to no-history rather
+  than crashing the chat); all storage access goes through a guard that can't
+  throw even when `localStorage` access itself is blocked.
+
+**Accepted trade-off:** `localStorage` is plaintext, origin-scoped, and readable
+by any same-origin script or browser extension — so while signed in, the *current*
+user's transcript is readable in DevTools, and an XSS would have access to it.
+This is the deliberate cost of cross-session persistence; it is *not* a
+server-side store and is never sent to the server. Re-keying by email (plus the
+sign-in purge and clear-on-sign-out) is what prevents cross-user exposure and is
+therefore intentional. Multi-tab writes are last-write-wins (no cross-tab
+reconciliation), which is acceptable for a single user's own tabs.
 
 ## Authorization: folder tiers
 

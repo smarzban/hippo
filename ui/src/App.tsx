@@ -10,15 +10,23 @@ import SetupWizard from "./SetupWizard";
 import LoginScreen from "./LoginScreen";
 import UploadModal from "./UploadModal";
 import ChatView from "./ChatView";
+import { safeStorage } from "./chatHistory";
+import { useChatHistory } from "./useChatHistory";
 
 type OpenDoc = { id: number; section: string };
 
 type Me = { email: string; role: string; auth_mode: string; name: string };
 
 export default function App() {
-  const { messages, sendMessage, status, error } = useChat({
+  // Start empty: the signed-in user is unknown at first render, so seeding from
+  // a shared key here would bleed a prior user's transcript onto the next. We
+  // restore the user's own history once /me resolves (see useChatHistory).
+  const { messages, sendMessage, status, error, setMessages } = useChat({
     transport: new DefaultChatTransport({ api: "/chat" }),
   });
+  // Resolve storage once through a guard that can't throw on access (sandboxed
+  // iframe / cookies blocked) — the app must never crash on load over history.
+  const [storage] = useState(safeStorage);
   const [input, setInput] = useState("");
   const [docIndex, setDocIndex] = useState<DocIndex>(new Map());
   const [openDoc, setOpenDoc] = useState<OpenDoc | null>(null);
@@ -68,6 +76,14 @@ export default function App() {
       else if (r.ok) r.json().then(setMe);
     }).catch(() => {});
   }, []);
+
+  // Persist/restore the transcript per signed-in user. The policy (which key to
+  // restore, when to persist, no cross-user bleed, no per-token writes) lives in
+  // chatHistory.ts and is unit-tested; this is just the wiring.
+  const meEmail = me?.email ?? null;
+  const { newChat, clearStored } = useChatHistory({
+    storage, meEmail, role: me?.role ?? null, messages, status, setMessages,
+  });
 
   useEffect(() => {
     fetch("/auth/config").then((r) => r.json()).then((c) => setAuthMode(c.auth_mode)).catch(() => {});
@@ -140,13 +156,21 @@ export default function App() {
           {me && me.auth_mode !== "none" && (
             <span className="whoami">
               {me.email} ({me.role})
-              {me.auth_mode === "oidc" && <> · <a href="/auth/logout">sign out</a></>}
+              {me.auth_mode === "oidc" && <> · <button className="linklike"
+                onClick={() => { clearStored(); window.location.href = "/auth/logout"; }}>sign out</button></>}
               {me.auth_mode === "password" && <> · <button className="linklike"
-                onClick={async () => { await fetch("/auth/logout", { method: "POST" }); window.location.reload(); }}>sign out</button></>}
+                onClick={async () => { await fetch("/auth/logout", { method: "POST" }); clearStored(); window.location.reload(); }}>sign out</button></>}
             </span>
           )}
           {me && (
             <button className="gear" title="Settings" onClick={() => setView("settings")}>⚙</button>
+          )}
+          {messages.length > 0 && (status === "ready" || status === "error") && (
+            // Only when the stream has settled: clearing mid-stream would let the
+            // in-flight response re-persist the transcript we just cleared.
+            <button className="upload-btn" title="Start a fresh conversation" onClick={newChat}>
+              New chat
+            </button>
           )}
           <button className="upload-btn" onClick={() => { setShowUpload(true); dispatchUp({ type: "reset" }); }}>
             Add doc

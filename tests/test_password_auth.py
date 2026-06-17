@@ -43,6 +43,19 @@ def test_login_success_sets_session_and_me_works(tmp_path):
     assert c.get("/me").status_code == 401
 
 
+def test_login_session_cookie_pins_7_day_max_age(tmp_path):
+    """The session cookie must carry the documented 7-day lifetime explicitly.
+    Without max_age Starlette defaults to ~14 days; pin 604800 so a refactor
+    can't silently revert it and stay green (#10)."""
+    c = TestClient(_app_with_owner(tmp_path))
+    r = c.post("/auth/login", json={"email": "owner@x.com", "password": "s3cret-pass"})
+    assert r.status_code == 200
+    set_cookie = " ".join(
+        v for k, v in r.headers.multi_items() if k.lower() == "set-cookie"
+    ).lower()
+    assert "max-age=604800" in set_cookie  # 7 * 24 * 60 * 60
+
+
 def test_wrong_password_is_generic_401(tmp_path):
     c = TestClient(_app_with_owner(tmp_path))
     r = c.post("/auth/login", json={"email": "owner@x.com", "password": "nope"})
