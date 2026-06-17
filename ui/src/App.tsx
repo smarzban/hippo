@@ -159,13 +159,15 @@ export default function App() {
               {me.auth_mode === "oidc" && <> · <button className="linklike"
                 onClick={() => { clearStored(); window.location.href = "/auth/logout"; }}>sign out</button></>}
               {me.auth_mode === "password" && <> · <button className="linklike"
-                onClick={async () => { clearStored(); await fetch("/auth/logout", { method: "POST" }); window.location.reload(); }}>sign out</button></>}
+                onClick={async () => { await fetch("/auth/logout", { method: "POST" }); clearStored(); window.location.reload(); }}>sign out</button></>}
             </span>
           )}
           {me && (
             <button className="gear" title="Settings" onClick={() => setView("settings")}>⚙</button>
           )}
-          {messages.length > 0 && (
+          {messages.length > 0 && (status === "ready" || status === "error") && (
+            // Only when the stream has settled: clearing mid-stream would let the
+            // in-flight response re-persist the transcript we just cleared.
             <button className="upload-btn" title="Start a fresh conversation" onClick={newChat}>
               New chat
             </button>
