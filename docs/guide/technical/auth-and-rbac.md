@@ -68,14 +68,19 @@ The chat transcript is persisted **in the browser's `localStorage`** so a refres
 keeps the current conversation. Because an answer can quote access-controlled
 documents, the persistence is shaped to limit exposure:
 
-- **Per-user keys.** The store is namespaced by the signed-in email
-  (`hippo:chat:v1:<email>`, lower-cased), so on a shared browser one user's
-  transcript is never restored for another. The transcript is restored from the
-  user's own key only once `/me` resolves — including the empty case — never from
-  a shared key.
+- **Per-user keys + purge on sign-in.** The store is namespaced by the signed-in
+  email (`hippo:chat:v1:<email>`, lower-cased), so one user's transcript is never
+  restored for another. The transcript is restored from the user's own key only
+  once `/me` resolves — including the empty case — never from a shared key. On
+  first sight of a signed-in user we **purge every other user's chat key** from
+  the device, so a prior user's transcript (and the enumeration of their email
+  via the key) doesn't linger on a shared/kiosk browser.
 - **Cleared on sign-out.** Both sign-out paths wipe the current user's key before
   ending the session, so the transcript doesn't outlive the session on a
   shared/kiosk machine. "New chat" clears it too.
+- **Role-bound.** The envelope records the role that produced it; a transcript is
+  dropped on load if the caller's role no longer matches (e.g. an admin
+  downgraded to user), so higher-tier answers aren't replayed after a downgrade.
 - **7-day TTL.** A stored transcript carries a timestamp and is dropped on load
   once older than 7 days, so a device-local copy never outlives the session
   lifetime that produced it.
@@ -87,13 +92,13 @@ documents, the persistence is shaped to limit exposure:
   throw even when `localStorage` access itself is blocked.
 
 **Accepted trade-off:** `localStorage` is plaintext, origin-scoped, and readable
-by any same-origin script or browser extension — so on a shared machine the
-transcript is readable in DevTools until sign-out or TTL expiry, and an XSS would
-have access to it. This is the deliberate cost of cross-session persistence; it
-is *not* a server-side store and is never sent to the server. Re-keying by email
-is the mechanism that prevents cross-user bleed and is therefore intentional.
-Multi-tab writes are last-write-wins (no cross-tab reconciliation), which is
-acceptable for a single user's own tabs.
+by any same-origin script or browser extension — so while signed in, the *current*
+user's transcript is readable in DevTools, and an XSS would have access to it.
+This is the deliberate cost of cross-session persistence; it is *not* a
+server-side store and is never sent to the server. Re-keying by email (plus the
+sign-in purge and clear-on-sign-out) is what prevents cross-user exposure and is
+therefore intentional. Multi-tab writes are last-write-wins (no cross-tab
+reconciliation), which is acceptable for a single user's own tabs.
 
 ## Authorization: folder tiers
 

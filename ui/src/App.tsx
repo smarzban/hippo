@@ -81,7 +81,9 @@ export default function App() {
   // restore, when to persist, no cross-user bleed, no per-token writes) lives in
   // chatHistory.ts and is unit-tested; this is just the wiring.
   const meEmail = me?.email ?? null;
-  const { newChat, clearStored } = useChatHistory({ storage, meEmail, messages, status, setMessages });
+  const { newChat, clearStored } = useChatHistory({
+    storage, meEmail, role: me?.role ?? null, messages, status, setMessages,
+  });
 
   useEffect(() => {
     fetch("/auth/config").then((r) => r.json()).then((c) => setAuthMode(c.auth_mode)).catch(() => {});
