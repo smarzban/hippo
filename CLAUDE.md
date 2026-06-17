@@ -170,18 +170,18 @@ implemented on branch `build/settings-ui` (PR pending).
 **PRODUCTIZATION EPIC (SP1+SP2+SP3) — COMPLETE, all merged to main 2026-06-13.** Each PR ran the loop
 plan→subagent-build→Codex+Opus review-on-PR→fix-with-regression-tests→squash-merge; each surfaced and
 fixed one real access-control issue in review.
-- **SP1 — roles & content-folder model (PR #11, `c074935`):** roles renamed user/admin/owner (pure
+- **SP1 — roles & content-folder model (PR #11, `1c5bbbb`):** roles renamed user/admin/owner (pure
   `roles.py` owns the rank rule); flat sources replaced by a folder adjacency tree with rank-filtered
   retrieval; surrogate-keyed users+tokens; /folders CRUD API + `require_owner`; multi-destination
   /ingest write-gated by `can_write`; React Folders tab + role-scoped upload modal; legacy-DB guard.
   Review fix: /folders PATCH/DELETE/resync now tier-check the target folder (was admin-floor only).
-- **SP2 — built-in password auth (PR #12, `ae16979`):** 4th auth mode `password` (email+password,
+- **SP2 — built-in password auth (PR #12, `d97409f`):** 4th auth mode `password` (email+password,
   argon2id, lockout 5/15min, 7-day session), POST /auth/login + /auth/logout + GET /auth/config,
   self-service POST /me/password, admin reset POST /users/{email}/password, break-glass
   `hippo user set-password` CLI, React login screen + password-change + admin-reset UI. No default
   credentials; generic 401s; hashes never returned. Review fix: admin reset uses the EFFECTIVE role
   (a HIPPO_ADMIN_EMAILS user is owner-tier).
-- **SP3 — first-run setup wizard & config store (PR #13, `85d21cd`):** DB `config` table; `Config`
+- **SP3 — first-run setup wizard & config store (PR #13, `73202d2`):** DB `config` table; `Config`
   overlay resolver (DB wins ONLY for `DB_OVERRIDABLE`; **secrets env-only, never DB-sourced/returned/
   writable**); `setup_token` field; `GET /setup/status` + `POST /setup` (token-gated via
   `compare_digest`, atomic `claim_setup`, 409-after); `GET/PUT /config` (owner-only; non-operational
