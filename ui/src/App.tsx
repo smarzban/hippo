@@ -10,22 +10,23 @@ import SetupWizard from "./SetupWizard";
 import LoginScreen from "./LoginScreen";
 import UploadModal from "./UploadModal";
 import ChatView from "./ChatView";
-import { chatHistoryKey, clearMessages, loadMessages, saveMessages } from "./chatHistory";
+import { safeStorage } from "./chatHistory";
+import { useChatHistory } from "./useChatHistory";
 
 type OpenDoc = { id: number; section: string };
 
 type Me = { email: string; role: string; auth_mode: string; name: string };
 
 export default function App() {
-  // Seed the transcript from device-local storage so a refresh keeps the
-  // current conversation. The signed-in user isn't known at first render, so
-  // we seed from the default key here and re-key to the user's history once
-  // /me resolves (see the effect below). Persistence logic lives in
-  // chatHistory.ts; App just calls it.
+  // Start empty: the signed-in user is unknown at first render, so seeding from
+  // a shared key here would bleed a prior user's transcript onto the next. We
+  // restore the user's own history once /me resolves (see useChatHistory).
   const { messages, sendMessage, status, error, setMessages } = useChat({
     transport: new DefaultChatTransport({ api: "/chat" }),
-    messages: loadMessages(localStorage, chatHistoryKey(null)),
   });
+  // Resolve storage once through a guard that can't throw on access (sandboxed
+  // iframe / cookies blocked) — the app must never crash on load over history.
+  const [storage] = useState(safeStorage);
   const [input, setInput] = useState("");
   const [docIndex, setDocIndex] = useState<DocIndex>(new Map());
   const [openDoc, setOpenDoc] = useState<OpenDoc | null>(null);
@@ -76,25 +77,11 @@ export default function App() {
     }).catch(() => {});
   }, []);
 
-  // Once we know who's signed in, swap the seeded "default" transcript for that
-  // user's own history (avoids one user's chat bleeding into another's on a
-  // shared browser). Only restores if the user-specific key holds something.
+  // Persist/restore the transcript per signed-in user. The policy (which key to
+  // restore, when to persist, no cross-user bleed, no per-token writes) lives in
+  // chatHistory.ts and is unit-tested; this is just the wiring.
   const meEmail = me?.email ?? null;
-  useEffect(() => {
-    if (!meEmail) return;
-    const restored = loadMessages(localStorage, chatHistoryKey(meEmail));
-    if (restored.length > 0) setMessages(restored);
-  }, [meEmail, setMessages]);
-
-  // Persist the transcript on every change, namespaced by the signed-in user.
-  useEffect(() => {
-    saveMessages(localStorage, chatHistoryKey(meEmail), messages);
-  }, [messages, meEmail]);
-
-  const newChat = useCallback(() => {
-    clearMessages(localStorage, chatHistoryKey(meEmail));
-    setMessages([]);
-  }, [meEmail, setMessages]);
+  const { newChat, clearStored } = useChatHistory({ storage, meEmail, messages, status, setMessages });
 
   useEffect(() => {
     fetch("/auth/config").then((r) => r.json()).then((c) => setAuthMode(c.auth_mode)).catch(() => {});
@@ -167,9 +154,10 @@ export default function App() {
           {me && me.auth_mode !== "none" && (
             <span className="whoami">
               {me.email} ({me.role})
-              {me.auth_mode === "oidc" && <> · <a href="/auth/logout">sign out</a></>}
+              {me.auth_mode === "oidc" && <> · <button className="linklike"
+                onClick={() => { clearStored(); window.location.href = "/auth/logout"; }}>sign out</button></>}
               {me.auth_mode === "password" && <> · <button className="linklike"
-                onClick={async () => { await fetch("/auth/logout", { method: "POST" }); window.location.reload(); }}>sign out</button></>}
+                onClick={async () => { clearStored(); await fetch("/auth/logout", { method: "POST" }); window.location.reload(); }}>sign out</button></>}
             </span>
           )}
           {me && (
